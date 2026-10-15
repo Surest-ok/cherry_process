@@ -1,3 +1,10 @@
+
+.data
+.align 8
+.global g_cherry_host_sp
+g_cherry_host_sp:
+    .quad 0
+.text
 /*
  * CherryProcess - Architecture Execution Trampoline for AArch64
  *
@@ -27,6 +34,9 @@ cherry_arch_enter_elf:
     stp     x23, x24, [sp, #-16]!
     stp     x21, x22, [sp, #-16]!
     stp     x19, x20, [sp, #-16]!
+    ldr     x18, =g_cherry_host_sp
+    mov     x17, sp
+    str     x17, [x18]
     mov     x19, sp             /* Save host SP in callee-saved X19 */
 
     /* 2. Switch to ELF user ABI stack */
@@ -73,10 +83,11 @@ cherry_arch_enter_elf:
 cherry_arch_exit_elf:
     /* Program returned via ret or terminated via exit() syscall.
      * X0 holds exit return code.
-     * X19 holds saved host SP.
-     * Restore host SP and callee-saved registers.
+     * Restore host SP from g_cherry_host_sp and callee-saved registers.
      */
-    mov     sp, x19
+    ldr     x18, =g_cherry_host_sp
+    ldr     x17, [x18]
+    mov     sp, x17
     ldp     x19, x20, [sp], #16
     ldp     x21, x22, [sp], #16
     ldp     x23, x24, [sp], #16
