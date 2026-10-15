@@ -337,6 +337,7 @@ pid_t proc_waitpid(pid_t pid, int *status, int options)
             target->state = PROC_STATE_UNUSED;
 
             mutex_unlock(&g_proc_lock);
+            schedule();
             return child_pid;
         }
 
