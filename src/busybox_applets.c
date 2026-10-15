@@ -485,6 +485,14 @@ int applet_grep(int argc, char **argv)
         }
     }
 
+    if (idx > 0) {
+        line[idx] = '\0';
+        if (strstr(line, pat)) {
+            put_str(line);
+            put_str("\n");
+        }
+    }
+
     if (fd > 0) sys_close(fd);
     return 0;
 }

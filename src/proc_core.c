@@ -160,9 +160,29 @@ pid_t proc_spawn_ex(const char *name, proc_entry_fn entry, int argc, char **argv
     }
 
     /* Setup stdio file descriptors */
-    child->fd_table[0] = (stdin_vfs_fd >= 0) ? stdin_vfs_fd : (parent ? parent->fd_table[0] : 0);
-    child->fd_table[1] = (stdout_vfs_fd >= 0) ? stdout_vfs_fd : (parent ? parent->fd_table[1] : 1);
-    child->fd_table[2] = (stderr_vfs_fd >= 0) ? stderr_vfs_fd : (parent ? parent->fd_table[2] : 2);
+    if (stdin_vfs_fd >= 0) {
+        child->fd_table[0] = stdin_vfs_fd;
+        child->stdio_redirected[0] = true;
+    } else {
+        child->fd_table[0] = parent ? parent->fd_table[0] : 0;
+        child->stdio_redirected[0] = false;
+    }
+
+    if (stdout_vfs_fd >= 0) {
+        child->fd_table[1] = stdout_vfs_fd;
+        child->stdio_redirected[1] = true;
+    } else {
+        child->fd_table[1] = parent ? parent->fd_table[1] : 1;
+        child->stdio_redirected[1] = false;
+    }
+
+    if (stderr_vfs_fd >= 0) {
+        child->fd_table[2] = stderr_vfs_fd;
+        child->stdio_redirected[2] = true;
+    } else {
+        child->fd_table[2] = parent ? parent->fd_table[2] : 2;
+        child->stdio_redirected[2] = false;
+    }
 
     for (int i = 3; i < PROC_MAX_FDS; i++) {
         child->fd_table[i] = -1;
@@ -235,6 +255,14 @@ static void proc_exit_internal(struct process *p, int exit_code)
     p->exit_code = exit_code;
     p->state = PROC_STATE_ZOMBIE;
     p->cpu_time_ms = ktime_get_ms() - p->start_time_ms;
+
+    /* Close redirected stdio descriptors */
+    for (int i = 0; i < 3; i++) {
+        if (p->stdio_redirected[i] && p->fd_table[i] >= 0) {
+            close(p->fd_table[i]);
+            p->fd_table[i] = -1;
+        }
+    }
 
     /* Close private file descriptors (above stdio) */
     for (int i = 3; i < PROC_MAX_FDS; i++) {

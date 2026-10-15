@@ -125,9 +125,19 @@ int cherry_process_run_tests(void)
         pass_syscall = true;
     }
 
-    /* 6. Test BusyBox Applets via Process Execution */
-    int ret_echo = busybox_run_cmd("echo 'busybox test line' > /cherry_proc_test/bb_test.txt");
-    if (ret_echo == 0) {
+    /* 6. Test ALL 27 BusyBox Applets via Process Execution & Multi-call Architecture */
+    int bb_pass_count = 0;
+
+    /* (1) busybox (main dispatcher / help) */
+    int r_bb = busybox_run_cmd("busybox");
+    int r_bb_help = busybox_run_cmd("busybox --help");
+    bool ok_bb = (r_bb == 0 && r_bb_help == 0);
+    if (ok_bb) bb_pass_count++;
+
+    /* (2) echo & redirection (>) */
+    int r_echo = busybox_run_cmd("echo 'busybox test line' > /cherry_proc_test/bb_test.txt");
+    bool ok_echo = false;
+    if (r_echo == 0) {
         int vfd = sys_open("/cherry_proc_test/bb_test.txt", O_RDONLY, 0);
         if (vfd >= 0) {
             char tbuf[64];
@@ -135,16 +145,128 @@ int cherry_process_run_tests(void)
             sys_close(vfd);
             if (tr > 0) {
                 tbuf[tr] = '\0';
-                if (strstr(tbuf, "busybox test line")) {
-                    pass_applets = true;
-                }
+                if (strstr(tbuf, "busybox test line")) ok_echo = true;
             }
         }
     }
+    if (ok_echo) bb_pass_count++;
+
+    /* (3) pwd */
+    bool ok_pwd = (busybox_run_cmd("pwd") == 0);
+    if (ok_pwd) bb_pass_count++;
+
+    /* (4) mkdir */
+    bool ok_mkdir = (busybox_run_cmd("mkdir /cherry_proc_test/bb_dir") == 0);
+    if (ok_mkdir) bb_pass_count++;
+
+    /* (5) touch */
+    bool ok_touch = (busybox_run_cmd("touch /cherry_proc_test/bb_dir/bb_file.txt") == 0);
+    if (ok_touch) bb_pass_count++;
+
+    /* (6) ls */
+    bool ok_ls = (busybox_run_cmd("ls -l /cherry_proc_test/bb_dir") == 0);
+    if (ok_ls) bb_pass_count++;
+
+    /* (7) cp */
+    bool ok_cp = (busybox_run_cmd("cp /cherry_proc_test/bb_test.txt /cherry_proc_test/bb_dir/bb_copy.txt") == 0);
+    if (ok_cp) bb_pass_count++;
+
+    /* (8) mv */
+    bool ok_mv = (busybox_run_cmd("mv /cherry_proc_test/bb_dir/bb_copy.txt /cherry_proc_test/bb_dir/bb_moved.txt") == 0);
+    if (ok_mv) bb_pass_count++;
+
+    /* (9) cat */
+    bool ok_cat = (busybox_run_cmd("cat /cherry_proc_test/bb_dir/bb_moved.txt") == 0);
+    if (ok_cat) bb_pass_count++;
+
+    /* (10) head */
+    bool ok_head = (busybox_run_cmd("head -n 2 /cherry_proc_test/bb_dir/bb_moved.txt") == 0);
+    if (ok_head) bb_pass_count++;
+
+    /* (11) tail */
+    bool ok_tail = (busybox_run_cmd("tail -n 2 /cherry_proc_test/bb_dir/bb_moved.txt") == 0);
+    if (ok_tail) bb_pass_count++;
+
+    /* (12) wc */
+    bool ok_wc = (busybox_run_cmd("wc /cherry_proc_test/bb_dir/bb_moved.txt") == 0);
+    if (ok_wc) bb_pass_count++;
+
+    /* (13) grep */
+    bool ok_grep = (busybox_run_cmd("grep busybox /cherry_proc_test/bb_dir/bb_moved.txt") == 0);
+    if (ok_grep) bb_pass_count++;
+
+    /* (14) hexdump */
+    bool ok_hexdump = (busybox_run_cmd("hexdump /cherry_proc_test/bb_dir/bb_moved.txt") == 0);
+    if (ok_hexdump) bb_pass_count++;
+
+    /* (15) rm */
+    bool ok_rm = (busybox_run_cmd("rm /cherry_proc_test/bb_dir/bb_file.txt /cherry_proc_test/bb_dir/bb_moved.txt") == 0);
+    if (ok_rm) bb_pass_count++;
+
+    /* (16) rmdir */
+    bool ok_rmdir = (busybox_run_cmd("rmdir /cherry_proc_test/bb_dir") == 0);
+    if (ok_rmdir) bb_pass_count++;
+
+    /* (17) uname */
+    bool ok_uname = (busybox_run_cmd("uname -a") == 0);
+    if (ok_uname) bb_pass_count++;
+
+    /* (18) ps */
+    bool ok_ps = (busybox_run_cmd("ps") == 0);
+    if (ok_ps) bb_pass_count++;
+
+    /* (19) kill */
+    bool ok_kill = (busybox_run_cmd("kill -0 1") == 0);
+    if (ok_kill) bb_pass_count++;
+
+    /* (20) sleep */
+    bool ok_sleep = (busybox_run_cmd("sleep 0") == 0);
+    if (ok_sleep) bb_pass_count++;
+
+    /* (21) df */
+    bool ok_df = (busybox_run_cmd("df") == 0);
+    if (ok_df) bb_pass_count++;
+
+    /* (22) free */
+    bool ok_free = (busybox_run_cmd("free") == 0);
+    if (ok_free) bb_pass_count++;
+
+    /* (23) dmesg */
+    bool ok_dmesg = (busybox_run_cmd("dmesg") == 0);
+    if (ok_dmesg) bb_pass_count++;
+
+    /* (24) date */
+    bool ok_date = (busybox_run_cmd("date") == 0);
+    if (ok_date) bb_pass_count++;
+
+    /* (25) true */
+    bool ok_true = (busybox_run_cmd("true") == 0);
+    if (ok_true) bb_pass_count++;
+
+    /* (26) false (exit status 1 is standard Unix specification for false) */
+    bool ok_false = (busybox_run_cmd("false") == 1);
+    if (ok_false) bb_pass_count++;
+
+    /* (27) sh (scripted subshell execution) */
+    bool ok_sh = (busybox_run_cmd("sh -c 'echo shell_direct_ok'") == 0);
+    if (ok_sh) bb_pass_count++;
+
+    /* Multi-call binary invocation verification: busybox <applet> [args] */
+    bool ok_multicall = (busybox_run_cmd("busybox echo multi_ok") == 0 &&
+                         busybox_run_cmd("busybox uname -a") == 0 &&
+                         busybox_run_cmd("busybox pwd") == 0);
+
+    if (bb_pass_count == 27 && ok_multicall) {
+        pass_applets = true;
+    }
+
+    pr_info("cherry_process: [busybox-verify] %d/27 applets passed (multicall=%s)\n",
+            bb_pass_count, ok_multicall ? "pass" : "fail");
 
     /* 7. Test BusyBox Shell Pipelines */
-    int ret_sh = busybox_run_cmd("echo pipeline_ok | cat");
-    if (ret_sh == 0) {
+    int ret_sh1 = busybox_run_cmd("echo pipeline_ok | cat");
+    int ret_sh2 = busybox_run_cmd("echo pipeline_wc | wc");
+    if (ret_sh1 == 0 && ret_sh2 == 0) {
         pass_sh = true;
     }
 
