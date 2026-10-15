@@ -425,9 +425,20 @@ long cherry_syscall(long nr, long a0, long a1, long a2, long a3, long a4, long a
     }
 }
 
+extern void cherry_arch_exit_elf(void);
+
 long cherry_syscall_dispatch_trap(struct syscall_frame *frame)
 {
     if (!frame) return -EINVAL;
+
+    if (frame->x8 == __NR_exit || frame->x8 == __NR_exit_group) {
+        int code = (int)frame->x0;
+        sys_exit(code);
+        frame->pc = (uint64_t)cherry_arch_exit_elf;
+        frame->x0 = (uint64_t)code;
+        return code;
+    }
+
     long ret = cherry_syscall((long)frame->x8,
                               (long)frame->x0, (long)frame->x1, (long)frame->x2,
                               (long)frame->x3, (long)frame->x4, (long)frame->x5);

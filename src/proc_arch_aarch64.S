@@ -6,6 +6,7 @@
  *
  * Provides decoupled ELF user-mode entry & host register restoration:
  *   int cherry_arch_enter_elf(uintptr_t entry_point, uintptr_t user_sp);
+ *   void cherry_arch_exit_elf(void);
  */
 
 .section .text
@@ -51,6 +52,7 @@ cherry_arch_enter_elf:
     mov     x15, xzr
     mov     x17, xzr
     mov     x18, xzr
+    /* X19 is preserved as host SP */
     mov     x20, xzr
     mov     x21, xzr
     mov     x22, xzr
@@ -61,16 +63,20 @@ cherry_arch_enter_elf:
     mov     x27, xzr
     mov     x28, xzr
     mov     x29, xzr            /* Frame pointer = 0 */
-    adr     x30, 1f             /* Link register returns to 1f if user code returns */
+    adr     x30, cherry_arch_exit_elf /* Return to exit trampoline if main() returns */
 
     /* 4. Branch to entry point */
     br      x16
 
-1:
-    /* User program returned via ret:
-     * X0 holds exit return code. Restore host stack and registers.
+.global cherry_arch_exit_elf
+.type cherry_arch_exit_elf, %function
+cherry_arch_exit_elf:
+    /* Program returned via ret or terminated via exit() syscall.
+     * X0 holds exit return code.
+     * X19 holds saved host SP.
+     * Restore host SP and callee-saved registers.
      */
-    mov     sp, x19             /* Restore host SP */
+    mov     sp, x19
     ldp     x19, x20, [sp], #16
     ldp     x21, x22, [sp], #16
     ldp     x23, x24, [sp], #16

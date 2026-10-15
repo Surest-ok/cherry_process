@@ -11,6 +11,7 @@
 #include "cherry_busybox.h"
 #include "cherry_elf.h"
 #include "cherry_printk.h"
+#include "native_elf_bin.h"
 #include <string.h>
 
 static int dummy_worker_fn(int argc, char **argv)
@@ -196,13 +197,21 @@ int cherry_process_run_tests(void)
     ph->p_memsz = 128;
     ph->p_align = 4096;
 
-    /* Real AArch64 executable instructions:
-     *   mov x0, #42   (0xd2800540)
+    /* Real AArch64 executable instructions emitting Linux syscalls via svc #0:
+     *   mov x8, #172  (0xd2801588) -> __NR_getpid
+     *   svc #0        (0xd4000001) -> trap into FreeRTOS_SWI_Handler -> cherry_syscall_dispatch_trap
+     *   mov x0, #42   (0xd2800540) -> exit status 42
+     *   mov x8, #93   (0xd2800ba8) -> __NR_exit
+     *   svc #0        (0xd4000001) -> trap into FreeRTOS_SWI_Handler -> cherry_arch_exit_elf
      *   ret           (0xd65f03c0)
      */
     uint32_t *elf_code = (uint32_t *)(dummy_elf + sizeof(Elf64_Ehdr) + sizeof(Elf64_Phdr));
-    elf_code[0] = 0xd2800540; /* mov x0, #42 */
-    elf_code[1] = 0xd65f03c0; /* ret */
+    elf_code[0] = 0xd2801588; /* mov x8, #172 (__NR_getpid) */
+    elf_code[1] = 0xd4000001; /* svc #0 */
+    elf_code[2] = 0xd2800540; /* mov x0, #42 */
+    elf_code[3] = 0xd2800ba8; /* mov x8, #93 (__NR_exit) */
+    elf_code[4] = 0xd4000001; /* svc #0 */
+    elf_code[5] = 0xd65f03c0; /* ret */
 
     int elf_fd = sys_open("/cherry_proc_test/sample_app.elf", O_WRONLY | O_CREAT | O_TRUNC, 0755);
     if (elf_fd >= 0) {
@@ -235,7 +244,25 @@ int cherry_process_run_tests(void)
         long wv = (tmp_wfd >= 0) ? cherry_syscall(__NR_writev, tmp_wfd, (long)&iov, 1, 0, 0, 0) : -1;
         if (tmp_wfd >= 0) sys_close(tmp_wfd);
 
-        if (exec_ret == 42 && elf_status == 42 && tid > 0 && rnd == 16 && wv == (long)strlen(hello_v)) {
+        /* (d) Test Native Linux ELF compiled with aarch64-linux-gnu-gcc */
+        bool pass_native_elf = false;
+        int nfd = sys_open("/cherry_proc_test/native_app.elf", O_WRONLY | O_CREAT | O_TRUNC, 0755);
+        if (nfd >= 0) {
+            sys_write(nfd, _tmp_freestanding_elf, _tmp_freestanding_elf_len);
+            sys_close(nfd);
+
+            pid_t npid = proc_spawn_elf("/cherry_proc_test/native_app.elf", 1, test_argv, test_envp, -1, -1, -1);
+            int nstatus = 0;
+            if (npid > 0) {
+                proc_waitpid(npid, &nstatus, 0);
+            }
+            if (nstatus == 42) {
+                pass_native_elf = true;
+                pr_info("cherry_process: native Linux static-pie ELF execution verified (status=42)\n");
+            }
+        }
+
+        if (exec_ret == 42 && elf_status == 42 && pass_native_elf && tid > 0 && rnd == 16 && wv == (long)strlen(hello_v)) {
             pass_elf = true;
         }
     }
