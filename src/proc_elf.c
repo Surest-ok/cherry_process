@@ -248,7 +248,7 @@ uintptr_t proc_elf_setup_stack(uintptr_t stack_top, int argc, char **argv, char 
         { AT_PHENT,         img->phentsize },
         { AT_PHNUM,         img->phnum },
         { AT_PAGESZ,        ELF_PAGE_SIZE },
-        { AT_BASE,          img->load_base },
+        { AT_BASE,          0 },
         { AT_FLAGS,         0 },
         { AT_ENTRY,         img->entry_point },
         { AT_UID,           0 },
@@ -309,17 +309,24 @@ static int elf_process_worker(int argc, char **argv)
     struct elf_process_ctx *ctx = (struct elf_process_ctx *)p->priv;
     p->priv = NULL; /* Transfer ownership to worker */
 
+    /* Setup System V ABI initial stack frame on the task's native thread stack */
+    uintptr_t cur_sp;
+    __asm__ volatile("mov %0, sp" : "=r"(cur_sp));
+    uintptr_t stack_top = ELF_ALIGN_DN(cur_sp - 1024, 16);
+    uintptr_t user_sp = proc_elf_setup_stack(stack_top, ctx->argc, ctx->argv, ctx->envp, &ctx->img);
+    if (!user_sp) {
+        proc_elf_unload(&ctx->img);
+        kfree(ctx);
+        return -EINVAL;
+    }
+
     /* Execute ELF entry point via architecture trampoline with full System V ABI stack */
-    int ret = cherry_arch_enter_elf(ctx->img.entry_point, ctx->user_sp);
+    int ret = cherry_arch_enter_elf(ctx->img.entry_point, user_sp);
     ctx->exit_code = ret;
     ctx->running = false;
 
     /* Resource reclamation */
     proc_elf_unload(&ctx->img);
-    if (ctx->stack_mem) {
-        kfree(ctx->stack_mem);
-        ctx->stack_mem = NULL;
-    }
     kfree(ctx);
 
     return ret;
@@ -340,24 +347,6 @@ int proc_spawn_elf(const char *path, int argc, char **argv, char **envp,
         return ret;
     }
 
-    /* 2. Allocate user execution stack (64KB) */
-    ctx->stack_mem = kmalloc(PROC_ELF_STACK_SIZE, GFP_KERNEL);
-    if (!ctx->stack_mem) {
-        proc_elf_unload(&ctx->img);
-        kfree(ctx);
-        return -ENOMEM;
-    }
-
-    /* 3. Setup System V ABI initial stack frame */
-    uintptr_t stack_top = (uintptr_t)ctx->stack_mem + PROC_ELF_STACK_SIZE;
-    ctx->user_sp = proc_elf_setup_stack(stack_top, argc, argv, envp, &ctx->img);
-    if (!ctx->user_sp) {
-        kfree(ctx->stack_mem);
-        proc_elf_unload(&ctx->img);
-        kfree(ctx);
-        return -EINVAL;
-    }
-
     ctx->argc = argc;
     ctx->argv = argv;
     ctx->envp = envp;
@@ -367,12 +356,11 @@ int proc_spawn_elf(const char *path, int argc, char **argv, char **envp,
     const char *proc_name = strrchr(path, '/');
     proc_name = proc_name ? proc_name + 1 : path;
 
-    /* 4. Spawn child process with ctx passed via priv */
+    /* 2. Spawn child process with ctx passed via priv */
     pid_t pid = proc_spawn_ex(proc_name, elf_process_worker, argc, argv, envp,
                               stdin_vfs_fd, stdout_vfs_fd, stderr_vfs_fd, ctx);
 
     if (pid <= 0) {
-        kfree(ctx->stack_mem);
         proc_elf_unload(&ctx->img);
         kfree(ctx);
         return pid;
@@ -389,16 +377,11 @@ int proc_exec_elf(const char *path, int argc, char **argv, char **envp)
     int ret = proc_elf_load(path, &img);
     if (ret != 0) return ret;
 
-    void *stack_mem = kmalloc(PROC_ELF_STACK_SIZE, GFP_KERNEL);
-    if (!stack_mem) {
-        proc_elf_unload(&img);
-        return -ENOMEM;
-    }
-
-    uintptr_t stack_top = (uintptr_t)stack_mem + PROC_ELF_STACK_SIZE;
+    uintptr_t cur_sp;
+    __asm__ volatile("mov %0, sp" : "=r"(cur_sp));
+    uintptr_t stack_top = ELF_ALIGN_DN(cur_sp - 1024, 16);
     uintptr_t sp = proc_elf_setup_stack(stack_top, argc, argv, envp, &img);
     if (!sp) {
-        kfree(stack_mem);
         proc_elf_unload(&img);
         return -EINVAL;
     }
@@ -406,7 +389,6 @@ int proc_exec_elf(const char *path, int argc, char **argv, char **envp)
     /* Synchronously enter ELF */
     int exit_code = cherry_arch_enter_elf(img.entry_point, sp);
 
-    kfree(stack_mem);
     proc_elf_unload(&img);
 
     return exit_code;

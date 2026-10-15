@@ -228,6 +228,10 @@ static void proc_exit_internal(struct process *p, int exit_code)
     if (!p) return;
 
     mutex_lock(&g_proc_lock);
+    if (p->state == PROC_STATE_ZOMBIE) {
+        mutex_unlock(&g_proc_lock);
+        return;
+    }
     p->exit_code = exit_code;
     p->state = PROC_STATE_ZOMBIE;
     p->cpu_time_ms = ktime_get_ms() - p->start_time_ms;
