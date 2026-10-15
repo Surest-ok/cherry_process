@@ -60,6 +60,7 @@ struct process {
     /* Per-Process File Descriptors (index 0..31)
      * Maps process fd to global VFS file descriptor (or -1 if closed) */
     int                 fd_table[PROC_MAX_FDS];
+    bool                stdio_redirected[3];
 
     /* Current Working Directory */
     char                cwd[VFS_PATH_MAX];
