@@ -332,7 +332,26 @@ static int sys_munmap(void *addr, size_t length)
     return 0;
 }
 
+__attribute__((weak)) void cherry_trace_sys_enter(long id, long a0, long a1, long a2, long a3, long a4, long a5)
+{
+    (void)id; (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+}
+__attribute__((weak)) void cherry_trace_sys_exit(long id, long ret)
+{
+    (void)id; (void)ret;
+}
+
+static long cherry_syscall_internal(long nr, long a0, long a1, long a2, long a3, long a4, long a5);
+
 long cherry_syscall(long nr, long a0, long a1, long a2, long a3, long a4, long a5)
+{
+    cherry_trace_sys_enter(nr, a0, a1, a2, a3, a4, a5);
+    long ret = cherry_syscall_internal(nr, a0, a1, a2, a3, a4, a5);
+    cherry_trace_sys_exit(nr, ret);
+    return ret;
+}
+
+static long cherry_syscall_internal(long nr, long a0, long a1, long a2, long a3, long a4, long a5)
 {
     (void)a4;
     (void)a5;
