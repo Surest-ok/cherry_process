@@ -9,6 +9,10 @@
 #include "cherry_syscall.h"
 #include "cherry_printk.h"
 #include <string.h>
+#include <stdint.h>
+
+__attribute__((weak)) void cherry_trace_proc_spawn(uint32_t pid, uint32_t ppid, const char *name) { (void)pid; (void)ppid; (void)name; }
+__attribute__((weak)) void cherry_trace_proc_exit(uint32_t pid, int exit_code) { (void)pid; (void)exit_code; }
 
 static struct process  g_process_table[PROC_MAX_COUNT];
 static struct mutex    g_proc_lock;
@@ -233,6 +237,7 @@ pid_t proc_spawn_ex(const char *name, proc_entry_fn entry, int argc, char **argv
     }
 
     pid_t new_pid = child->pid;
+    cherry_trace_proc_spawn((uint32_t)new_pid, (uint32_t)child->ppid, child->name);
     mutex_unlock(&g_proc_lock);
     return new_pid;
 }
@@ -254,6 +259,7 @@ static void proc_exit_internal(struct process *p, int exit_code)
     }
     p->exit_code = exit_code;
     p->state = PROC_STATE_ZOMBIE;
+    cherry_trace_proc_exit((uint32_t)p->pid, exit_code);
     p->cpu_time_ms = ktime_get_ms() - p->start_time_ms;
 
     /* Close redirected stdio descriptors */
