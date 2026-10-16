@@ -57,6 +57,11 @@ pid_t busybox_spawn(const char *cmdline, int in_fd, int out_fd, int err_fd);
  */
 int busybox_run_cmd(const char *cmdline);
 
+extern const uint8_t cherry_busybox_elf_start[];
+extern const uint8_t cherry_busybox_elf_end[];
+size_t cherry_busybox_elf_size(void);
+int    cherry_busybox_install_vfs(void);
+
 /* Core Applet Implementations */
 int applet_echo(int argc, char **argv);
 int applet_cat(int argc, char **argv);

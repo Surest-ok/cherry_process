@@ -80,6 +80,9 @@ int cherry_process_init(void)
     extern void proc_register_shell_commands(void);
     proc_register_shell_commands();
 
+    extern int cherry_busybox_install_vfs(void);
+    cherry_busybox_install_vfs();
+
     pr_info("cherry_process: initialized process subsystem (pid=1 'init' running on cpu%u)\n",
             (unsigned int)init_p->core_id);
     return 0;

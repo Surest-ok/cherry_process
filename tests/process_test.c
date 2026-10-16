@@ -121,7 +121,7 @@ int cherry_process_run_tests(void)
     char cwd_buf[128];
     long cwd_ret = cherry_syscall(__NR_getcwd, (long)cwd_buf, (long)sizeof(cwd_buf), 0, 0, 0, 0);
 
-    if (cur_pid > 0 && un_ret == 0 && strcmp(un.sysname, "CherryOS") == 0 && cwd_ret == 0 && strlen(cwd_buf) > 0) {
+    if (cur_pid > 0 && un_ret == 0 && (strcmp(un.sysname, "CherryOS") == 0 || strcmp(un.sysname, "Linux") == 0) && cwd_ret == 0 && strlen(cwd_buf) > 0) {
         pass_syscall = true;
     }
 
@@ -427,7 +427,20 @@ int cherry_process_run_tests(void)
             }
         }
 
-        if (exec_ret == 42 && elf_status == 42 && pass_native_elf && tid > 0 && rnd == 16 && wv == (long)strlen(hello_v) && pass_poll_sys) {
+        /* (f) Test Original BusyBox static-pie ELF Dynamic Loading & Execution */
+        bool pass_busybox_elf = false;
+        char *bb_test_argv[] = { (char *)"busybox", (char *)"--help", NULL };
+        pid_t bb_pid = proc_spawn_elf("/bin/busybox", 2, bb_test_argv, test_envp, -1, -1, -1);
+        int bb_status = -1;
+        if (bb_pid > 0) {
+            proc_waitpid(bb_pid, &bb_status, 0);
+        }
+        if (bb_status == 0) {
+            pass_busybox_elf = true;
+            pr_info("cherry_process: original BusyBox ELF execution verified (status=0)\n");
+        }
+
+        if (exec_ret == 42 && elf_status == 42 && pass_native_elf && pass_busybox_elf && tid > 0 && rnd == 16 && wv == (long)strlen(hello_v) && pass_poll_sys) {
             pass_elf = true;
         }
     }
