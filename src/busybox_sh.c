@@ -148,11 +148,7 @@ static int execute_pipeline(char *line)
         pids[i] = busybox_spawn(stages[i], in_fd, out_fd, -1);
     }
 
-    /* Close pipe ends in parent so peer gets EOF cleanly when writer exits */
-    for (int i = 0; i < stage_count - 1; i++) {
-        close(pipe_fds[i][0]);
-        close(pipe_fds[i][1]);
-    }
+    /* Note: children own their redirected pipe FDs and close them in proc_exit_internal */
 
     /* Wait for all pipeline children */
     int last_status = 0;

@@ -26,6 +26,7 @@ static int proc_task_wrapper(void *arg)
     struct process *p = (struct process *)arg;
     if (!p) return -1;
 
+    kthread_set_data(p);
     p->state = PROC_STATE_RUNNING;
     p->core_id = smp_processor_id();
     p->start_time_ms = ktime_get_ms();
@@ -36,6 +37,7 @@ static int proc_task_wrapper(void *arg)
     }
 
     proc_exit_internal(p, ret);
+    kthread_set_data(NULL);
     kthread_exit(0);
     return 0;
 }
@@ -59,6 +61,7 @@ int cherry_process_init(void)
     init_p->task = kthread_current();
     strncpy(init_p->cwd, "/", VFS_PATH_MAX - 1);
     sema_init(&init_p->wait_sem, 0);
+    kthread_set_data(init_p);
 
     /* Open default stdio for init process */
     int console_r = open("/dev/console", O_RDONLY);
@@ -86,6 +89,11 @@ struct process *proc_current(void)
 {
     if (!g_proc_initialized) {
         cherry_process_init();
+    }
+
+    void *tls_p = kthread_get_data();
+    if (tls_p) {
+        return (struct process *)tls_p;
     }
 
     struct task_struct *cur = kthread_current();
@@ -466,4 +474,18 @@ int proc_for_each(int (*cb)(struct process *p, void *arg), void *arg)
     }
     mutex_unlock(&g_proc_lock);
     return 0;
+}
+
+void proc_arch_set_host_sp(uintptr_t host_sp)
+{
+    struct process *p = proc_current();
+    if (p) {
+        p->host_sp = host_sp;
+    }
+}
+
+uintptr_t proc_arch_get_host_sp(void)
+{
+    struct process *p = proc_current();
+    return p ? p->host_sp : 0;
 }
