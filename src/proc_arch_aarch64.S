@@ -71,6 +71,7 @@ cherry_arch_enter_elf:
     mov     x28, xzr
     mov     x29, xzr            /* Frame pointer = 0 */
     adr     x30, cherry_arch_exit_elf /* Return to exit trampoline if main() returns */
+    msr     tpidr_el0, xzr      /* Reset thread pointer for fresh ELF */
 
     /* 4. Branch to entry point */
     br      x16

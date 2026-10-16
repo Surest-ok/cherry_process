@@ -6,6 +6,7 @@
  */
 
 #include "cherry_busybox.h"
+#include "cherry_pipe.h"
 #include "cherry_syscall.h"
 #include "uart.h"
 #include <string.h>

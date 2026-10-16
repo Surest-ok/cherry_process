@@ -118,18 +118,26 @@ int proc_elf_load(const char *path, struct elf_image *img)
         return -ENOEXEC;
     }
 
-    bool is_pie = (ehdr.e_type == ET_DYN);
-    size_t span = ELF_ALIGN_UP(max_vaddr - min_vaddr, ELF_PAGE_SIZE);
+    uintptr_t max_align = 65536;
+    for (int i = 0; i < ehdr.e_phnum; i++) {
+        if (ph_table[i].p_type == PT_LOAD && ph_table[i].p_align > max_align) {
+            max_align = ph_table[i].p_align;
+        }
+    }
 
-    /* Allocate memory for program image */
-    void *load_mem = kmalloc(span + ELF_PAGE_SIZE, GFP_KERNEL);
+    bool is_pie = (ehdr.e_type == ET_DYN);
+    size_t span = ELF_ALIGN_UP(max_vaddr - min_vaddr, max_align);
+    size_t heap_reserve = 4 * 1024 * 1024; /* 4MB preallocated heap buffer for brk */
+
+    /* Allocate memory for program image and heap */
+    void *load_mem = kmalloc(span + max_align + heap_reserve, GFP_KERNEL);
     if (!load_mem) {
         kfree(ph_table);
         sys_close(fd);
         return -ENOMEM;
     }
-    uintptr_t base = ELF_ALIGN_UP((uintptr_t)load_mem, ELF_PAGE_SIZE);
-    memset((void *)base, 0, span);
+    uintptr_t base = ELF_ALIGN_UP((uintptr_t)load_mem, max_align);
+    memset((void *)base, 0, span + heap_reserve);
 
     /* Load each PT_LOAD segment */
     for (int i = 0; i < ehdr.e_phnum; i++) {
@@ -170,7 +178,9 @@ int proc_elf_load(const char *path, struct elf_image *img)
     img->entry_point = is_pie ? (base + (ehdr.e_entry - min_vaddr)) : (base + (ehdr.e_entry - min_vaddr));
     img->phnum       = ehdr.e_phnum;
     img->phentsize   = ehdr.e_phentsize;
-    img->phdr_vaddr  = (uintptr_t)ph_table;
+    img->phdr_vaddr  = base + ehdr.e_phoff;
+
+    kfree(ph_table);
 
     pr_info("proc_elf: loaded '%s' (base=0x%lx, entry=0x%lx, size=%lu bytes, pie=%d)\n",
             path, (unsigned long)img->load_base, (unsigned long)img->entry_point,
@@ -186,10 +196,7 @@ void proc_elf_unload(struct elf_image *img)
         kfree(img->raw_mem);
         img->raw_mem = NULL;
     }
-    if (img->phdr_vaddr) {
-        kfree((void *)img->phdr_vaddr);
-        img->phdr_vaddr = 0;
-    }
+    img->phdr_vaddr = 0;
 }
 
 uintptr_t proc_elf_setup_stack(uintptr_t stack_top, int argc, char **argv, char **envp,
@@ -309,12 +316,23 @@ static int elf_process_worker(int argc, char **argv)
     struct elf_process_ctx *ctx = (struct elf_process_ctx *)p->priv;
     p->priv = NULL; /* Transfer ownership to worker */
 
-    /* Setup System V ABI initial stack frame on the task's native thread stack */
-    uintptr_t cur_sp;
-    __asm__ volatile("mov %0, sp" : "=r"(cur_sp));
-    uintptr_t stack_top = ELF_ALIGN_DN(cur_sp - 1024, 16);
-    uintptr_t user_sp = proc_elf_setup_stack(stack_top, ctx->argc, ctx->argv, ctx->envp, &ctx->img);
+    /* Initialize process heap bounds */
+    p->heap_start = ctx->img.load_base + ctx->img.total_size;
+    p->brk        = p->heap_start;
+    p->heap_end   = p->heap_start + (4 * 1024 * 1024);
+
+    /* Allocate dedicated user stack (256KB) for dynamic ELF execution */
+    size_t stack_size = 256 * 1024;
+    void *stack_buf = kmalloc(stack_size, GFP_KERNEL);
+    if (!stack_buf) {
+        proc_elf_unload(&ctx->img);
+        kfree(ctx);
+        return -ENOMEM;
+    }
+    uintptr_t stack_top = ELF_ALIGN_DN((uintptr_t)stack_buf + stack_size, 16);
+    uintptr_t user_sp = proc_elf_setup_stack(stack_top, p->argc, p->argv, p->envp, &ctx->img);
     if (!user_sp) {
+        kfree(stack_buf);
         proc_elf_unload(&ctx->img);
         kfree(ctx);
         return -EINVAL;
@@ -326,6 +344,7 @@ static int elf_process_worker(int argc, char **argv)
     ctx->running = false;
 
     /* Resource reclamation */
+    kfree(stack_buf);
     proc_elf_unload(&ctx->img);
     kfree(ctx);
 
@@ -366,6 +385,15 @@ int proc_spawn_elf(const char *path, int argc, char **argv, char **envp,
         return pid;
     }
 
+    struct process *child = proc_get_by_pid(pid);
+    if (child) {
+        if (path[0] == '/') {
+            strncpy(child->exec_path, path, VFS_PATH_MAX - 1);
+        } else {
+            snprintf(child->exec_path, VFS_PATH_MAX, "/%s", path);
+        }
+    }
+
     return pid;
 }
 
@@ -377,11 +405,28 @@ int proc_exec_elf(const char *path, int argc, char **argv, char **envp)
     int ret = proc_elf_load(path, &img);
     if (ret != 0) return ret;
 
-    uintptr_t cur_sp;
-    __asm__ volatile("mov %0, sp" : "=r"(cur_sp));
-    uintptr_t stack_top = ELF_ALIGN_DN(cur_sp - 1024, 16);
+    struct process *p = proc_current();
+    if (p) {
+        p->heap_start = img.load_base + img.total_size;
+        p->brk        = p->heap_start;
+        p->heap_end   = p->heap_start + (4 * 1024 * 1024);
+        if (path[0] == '/') {
+            strncpy(p->exec_path, path, VFS_PATH_MAX - 1);
+        } else {
+            snprintf(p->exec_path, VFS_PATH_MAX, "/%s", path);
+        }
+    }
+
+    size_t stack_size = 256 * 1024;
+    void *stack_buf = kmalloc(stack_size, GFP_KERNEL);
+    if (!stack_buf) {
+        proc_elf_unload(&img);
+        return -ENOMEM;
+    }
+    uintptr_t stack_top = ELF_ALIGN_DN((uintptr_t)stack_buf + stack_size, 16);
     uintptr_t sp = proc_elf_setup_stack(stack_top, argc, argv, envp, &img);
     if (!sp) {
+        kfree(stack_buf);
         proc_elf_unload(&img);
         return -EINVAL;
     }
@@ -389,6 +434,7 @@ int proc_exec_elf(const char *path, int argc, char **argv, char **envp)
     /* Synchronously enter ELF */
     int exit_code = cherry_arch_enter_elf(img.entry_point, sp);
 
+    kfree(stack_buf);
     proc_elf_unload(&img);
 
     return exit_code;

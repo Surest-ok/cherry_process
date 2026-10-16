@@ -29,6 +29,7 @@ sources = [
     'src/proc_shell.c',
     'src/proc_elf.c',
     'src/proc_arch_aarch64.S',
+    'src/proc_busybox_bin.S',
     'tests/process_test.c',
 ]
 

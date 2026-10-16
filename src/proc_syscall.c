@@ -232,7 +232,7 @@ int sys_kill(pid_t pid, int sig)
 int sys_uname(struct utsname *buf)
 {
     if (!buf) return -EINVAL;
-    strncpy(buf->sysname, "CherryOS", sizeof(buf->sysname) - 1);
+    strncpy(buf->sysname, "Linux", sizeof(buf->sysname) - 1);
     strncpy(buf->nodename, "cherry-smp", sizeof(buf->nodename) - 1);
     strncpy(buf->release, "5.10.0-cherry", sizeof(buf->release) - 1);
     strncpy(buf->version, "#1 SMP FreeRTOS AArch64", sizeof(buf->version) - 1);
@@ -266,11 +266,98 @@ void *sys_brk(void *addr)
     struct process *p = proc_current();
     if (!p) return NULL;
 
-    if (!addr) {
+    if (!addr || (uintptr_t)addr == 0) {
         return (void *)p->brk;
     }
-    p->brk = (uintptr_t)addr;
-    return addr;
+    if ((uintptr_t)addr >= p->heap_start && (uintptr_t)addr <= p->heap_end) {
+        p->brk = (uintptr_t)addr;
+        return addr;
+    }
+    if ((uintptr_t)addr < p->heap_start) {
+        return (void *)p->heap_start;
+    }
+    return (void *)p->brk;
+}
+
+int sys_fcntl(int fd, int cmd, long arg)
+{
+    struct process *p = proc_current();
+    if (!p) return -ESRCH;
+    int vfs_fd = proc_fd_get(p, fd);
+    if (vfs_fd < 0) return -EBADF;
+
+    struct vfs_file *file = vfs_file_get(vfs_fd);
+    if (!file) return -EBADF;
+
+    int ret = 0;
+    switch (cmd) {
+    case 0: /* F_DUPFD */
+    case 1030: /* F_DUPFD_CLOEXEC */
+        ret = proc_fd_install(p, vfs_fd);
+        break;
+    case 1: /* F_GETFD */
+        ret = 0;
+        break;
+    case 2: /* F_SETFD */
+        ret = 0;
+        break;
+    case 3: /* F_GETFL */
+        ret = (int)file->f_flags;
+        break;
+    case 4: /* F_SETFL */
+        file->f_flags = (file->f_flags & ~O_NONBLOCK) | ((uint32_t)arg & O_NONBLOCK);
+        ret = 0;
+        break;
+    default:
+        ret = 0;
+        break;
+    }
+    vfs_file_put(file);
+    return ret;
+}
+
+int sys_ftruncate(int fd, off_t length)
+{
+    struct process *p = proc_current();
+    if (!p) return -ESRCH;
+    int vfs_fd = proc_fd_get(p, fd);
+    if (vfs_fd < 0) return -EBADF;
+
+    struct vfs_file *file = vfs_file_get(vfs_fd);
+    if (!file) return -EBADF;
+
+    int ret = 0;
+    if (file->f_inode && file->f_inode->i_ops && file->f_inode->i_ops->truncate) {
+        ret = file->f_inode->i_ops->truncate(file->f_inode, length);
+    }
+    vfs_file_put(file);
+    return ret;
+}
+
+ssize_t sys_readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz)
+{
+    (void)dirfd;
+    if (!path || !buf || bufsiz == 0) return -EINVAL;
+    struct process *p = proc_current();
+
+    if (strcmp(path, "/proc/self/exe") == 0) {
+        const char *ep = (p && p->exec_path[0] == '/') ? p->exec_path : "/bin/busybox";
+        size_t len = strlen(ep);
+        if (len > bufsiz) len = bufsiz;
+        memcpy(buf, ep, len);
+        return (ssize_t)len;
+    }
+    return -ENOENT;
+}
+
+int sys_gettimeofday(struct timeval *tv, void *tz)
+{
+    (void)tz;
+    if (!tv) return -EINVAL;
+    uint64_t ns = ktime_get_real_ns();
+    tv->tv_sec = (long)(ns / 1000000000ULL);
+    tv->tv_usec = (long)((ns % 1000000000ULL) / 1000);
+    return 0;
 }
 
 static ssize_t sys_writev(int fd, const struct iovec *iov, int iovcnt)
@@ -616,6 +703,8 @@ static long cherry_syscall_internal(long nr, long a0, long a1, long a2, long a3,
         return (long)sys_dup((int)a0);
     case __NR_dup3:
         return (long)sys_dup2((int)a0, (int)a1);
+    case __NR_fcntl:
+        return (long)sys_fcntl((int)a0, (int)a1, a2);
     case __NR_ioctl:
         return (long)sys_ioctl((int)a0, (unsigned long)a1, (void *)a2);
     case __NR_mkdirat:
@@ -624,6 +713,8 @@ static long cherry_syscall_internal(long nr, long a0, long a1, long a2, long a3,
         return (long)sys_unlink((const char *)a1);
     case __NR_stat:
         return (long)sys_stat((const char *)a0, (struct stat *)a1);
+    case __NR_ftruncate:
+        return (long)sys_ftruncate((int)a0, (off_t)a1);
     case __NR_chdir:
         return (long)sys_chdir((const char *)a0);
     case __NR_openat:
@@ -642,7 +733,12 @@ static long cherry_syscall_internal(long nr, long a0, long a1, long a2, long a3,
         return (long)sys_writev((int)a0, (const struct iovec *)a1, (int)a2);
     case __NR_readv:
         return (long)sys_readv((int)a0, (const struct iovec *)a1, (int)a2);
+    case __NR_readlinkat:
+        return (long)sys_readlinkat((int)a0, (const char *)a1, (char *)a2, (size_t)a3);
     case __NR_newfstatat:
+        if ((a3 & 0x1000) || !a1 || *(const char *)a1 == '\0') {
+            return (long)sys_fstat((int)a0, (struct stat *)a2);
+        }
         return (long)sys_stat((const char *)a1, (struct stat *)a2);
     case __NR_fstat:
         return (long)sys_fstat((int)a0, (struct stat *)a1);
@@ -653,11 +749,15 @@ static long cherry_syscall_internal(long nr, long a0, long a1, long a2, long a3,
     case __NR_set_tid_address:
         return (long)sys_getpid();
     case __NR_futex:
+    case __NR_set_robust_list:
+    case __NR_setitimer:
         return 0;
     case __NR_nanosleep:
         return (long)sys_nanosleep((const struct timespec *)a0, (struct timespec *)a1);
     case __NR_clock_gettime:
         return (long)sys_clock_gettime((int)a0, (struct timespec *)a1);
+    case __NR_gettimeofday:
+        return (long)sys_gettimeofday((struct timeval *)a0, (void *)a1);
     case __NR_sched_yield:
         kal_thread_yield();
         return 0;
@@ -721,6 +821,19 @@ static long cherry_syscall_internal(long nr, long a0, long a1, long a2, long a3,
         return (long)sys_setsockopt((int)a0, (int)a1, (int)a2, (const void *)a3, (socklen_t)a4);
     case __NR_getsockopt:
         return (long)sys_getsockopt((int)a0, (int)a1, (int)a2, (void *)a3, (socklen_t *)a4);
+    case __NR_getsockname:
+    case __NR_getpeername:
+        if (a1 && a2 && *(uint32_t *)a2 >= 16) {
+            uint8_t *sin = (uint8_t *)a1;
+            sin[0] = 2; sin[1] = 0;             /* AF_INET */
+            sin[2] = 0x1f; sin[3] = 0x90;       /* Port 8080 */
+            sin[4] = 127; sin[5] = 0; sin[6] = 0; sin[7] = 1; /* 127.0.0.1 */
+            memset(&sin[8], 0, 8);
+            *(uint32_t *)a2 = 16;
+        }
+        return 0;
+    case __NR_statx:
+        return -ENOSYS;
     case __NR_shutdown:
         return (long)sys_shutdown((int)a0, (int)a1);
     default:

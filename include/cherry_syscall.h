@@ -31,6 +31,7 @@ extern "C" {
 #define __NR_unlinkat           35
 #define __NR_renameat           38
 #define __NR_stat               40
+#define __NR_ftruncate          46
 #define __NR_chdir              49
 #define __NR_openat             56
 #define __NR_close              57
@@ -43,13 +44,16 @@ extern "C" {
 #define __NR_writev             66
 #define __NR_pselect6           72
 #define __NR_ppoll              73
+#define __NR_readlinkat         78
 #define __NR_newfstatat         79
 #define __NR_fstat              80
 #define __NR_exit               93
 #define __NR_exit_group         94
 #define __NR_set_tid_address    96
 #define __NR_futex              98
+#define __NR_set_robust_list    99
 #define __NR_nanosleep          101
+#define __NR_setitimer          103
 #define __NR_clock_gettime      113
 #define __NR_sched_yield        124
 #define __NR_kill               129
@@ -142,6 +146,10 @@ ssize_t sys_write(int fd, const void *buf, size_t count);
 off_t   sys_lseek(int fd, off_t offset, int whence);
 int     sys_stat(const char *path, struct stat *buf);
 int     sys_fstat(int fd, struct stat *buf);
+int     sys_ftruncate(int fd, off_t length);
+int     sys_fcntl(int fd, int cmd, long arg);
+ssize_t sys_readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz);
+int     sys_gettimeofday(struct timeval *tv, void *tz);
 int     sys_ioctl(int fd, unsigned long req, void *arg);
 int     sys_pipe2(int pipefd[2], int flags);
 int     sys_dup(int oldfd);
