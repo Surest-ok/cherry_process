@@ -84,6 +84,7 @@ struct process {
     /* Executable and Context */
     char                exec_path[VFS_PATH_MAX];/* Executable full path */
     void               *priv;                   /* Private process context / loader data */
+    uintptr_t           host_sp;                /* Saved host SP for ELF execution */
 
     /* Accounting & Timing */
     uint64_t            start_time_ms;

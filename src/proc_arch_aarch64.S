@@ -1,9 +1,3 @@
-
-.data
-.align 8
-.global g_cherry_host_sp
-g_cherry_host_sp:
-    .quad 0
 .text
 /*
  * CherryProcess - Architecture Execution Trampoline for AArch64
@@ -15,6 +9,9 @@ g_cherry_host_sp:
  *   int cherry_arch_enter_elf(uintptr_t entry_point, uintptr_t user_sp);
  *   void cherry_arch_exit_elf(void);
  */
+
+.extern proc_arch_set_host_sp
+.extern proc_arch_get_host_sp
 
 .section .text
 .align 4
@@ -34,14 +31,14 @@ cherry_arch_enter_elf:
     stp     x23, x24, [sp, #-16]!
     stp     x21, x22, [sp, #-16]!
     stp     x19, x20, [sp, #-16]!
-    ldr     x18, =g_cherry_host_sp
-    mov     x17, sp
-    str     x17, [x18]
-    mov     x19, sp             /* Save host SP in callee-saved X19 */
 
-    /* 2. Switch to ELF user ABI stack */
-    mov     sp, x1
-    mov     x16, x0             /* Target entry point in X16 */
+    /* Save host SP in process descriptor via proc_arch_set_host_sp */
+    mov     x19, x0             /* Save entry_point in x19 */
+    mov     x20, x1             /* Save user_sp in x20 */
+    mov     x0, sp
+    bl      proc_arch_set_host_sp
+    mov     x16, x19            /* Target entry point in x16 */
+    mov     sp, x20             /* Switch to ELF user ABI stack */
 
     /* 3. Setup initial register state per Linux System V ABI */
     mov     x0, xzr             /* X0 = 0 (no rtld_fini exit handler) */
@@ -62,7 +59,7 @@ cherry_arch_enter_elf:
     mov     x15, xzr
     mov     x17, xzr
     mov     x18, xzr
-    /* X19 is preserved as host SP */
+    mov     x19, xzr
     mov     x20, xzr
     mov     x21, xzr
     mov     x22, xzr
@@ -83,11 +80,12 @@ cherry_arch_enter_elf:
 cherry_arch_exit_elf:
     /* Program returned via ret or terminated via exit() syscall.
      * X0 holds exit return code.
-     * Restore host SP from g_cherry_host_sp and callee-saved registers.
+     * Restore host SP from process descriptor and callee-saved registers.
      */
-    ldr     x18, =g_cherry_host_sp
-    ldr     x17, [x18]
-    mov     sp, x17
+    mov     x19, x0             /* Save return code */
+    bl      proc_arch_get_host_sp
+    mov     sp, x0              /* Restore host SP */
+    mov     x0, x19             /* Restore return code */
     ldp     x19, x20, [sp], #16
     ldp     x21, x22, [sp], #16
     ldp     x23, x24, [sp], #16
