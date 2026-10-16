@@ -332,6 +332,262 @@ static int sys_munmap(void *addr, size_t length)
     return 0;
 }
 
+/* =========================================================================
+ * I/O Multiplexing System Calls (poll, select, epoll)
+ * ========================================================================= */
+int sys_poll(struct pollfd *fds, nfds_t nfds, int timeout)
+{
+    if (!fds && nfds > 0) return -EINVAL;
+    struct process *p = proc_current();
+    if (!p) return -ESRCH;
+
+    struct pollfd *k_fds = (struct pollfd *)kmalloc(sizeof(struct pollfd) * (nfds ? nfds : 1), GFP_KERNEL);
+    if (!k_fds && nfds > 0) return -ENOMEM;
+
+    for (nfds_t i = 0; i < nfds; i++) {
+        k_fds[i].events = fds[i].events;
+        k_fds[i].revents = 0;
+        if (fds[i].fd >= 0) {
+            k_fds[i].fd = proc_fd_get(p, fds[i].fd);
+            if (k_fds[i].fd < 0) {
+                k_fds[i].fd = -1;
+                fds[i].revents = POLLNVAL;
+            }
+        } else {
+            k_fds[i].fd = -1;
+        }
+    }
+
+    int ret = poll(k_fds, nfds, timeout);
+    for (nfds_t i = 0; i < nfds; i++) {
+        if (fds[i].revents != POLLNVAL) {
+            fds[i].revents = k_fds[i].revents;
+        }
+    }
+
+    if (k_fds) kfree(k_fds);
+    return ret;
+}
+
+int sys_ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *tmo_p, const void *sigmask)
+{
+    (void)sigmask;
+    int timeout_ms = -1;
+    if (tmo_p) {
+        timeout_ms = (int)(tmo_p->tv_sec * 1000 + tmo_p->tv_nsec / 1000000);
+        if (timeout_ms < 0) timeout_ms = 0;
+    }
+    return sys_poll(fds, nfds, timeout_ms);
+}
+
+int sys_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout)
+{
+    if (nfds < 0 || nfds > PROC_MAX_FDS) return -EINVAL;
+    struct process *p = proc_current();
+    if (!p) return -ESRCH;
+
+    fd_set vfs_r, vfs_w, vfs_e;
+    FD_ZERO(&vfs_r);
+    FD_ZERO(&vfs_w);
+    FD_ZERO(&vfs_e);
+
+    int max_vfs_fd = 0;
+    for (int fd = 0; fd < nfds; fd++) {
+        int vfs_fd = proc_fd_get(p, fd);
+        if (vfs_fd >= 0) {
+            if (readfds && FD_ISSET(fd, readfds))   FD_SET(vfs_fd, &vfs_r);
+            if (writefds && FD_ISSET(fd, writefds))  FD_SET(vfs_fd, &vfs_w);
+            if (exceptfds && FD_ISSET(fd, exceptfds)) FD_SET(vfs_fd, &vfs_e);
+            if (vfs_fd > max_vfs_fd) max_vfs_fd = vfs_fd;
+        }
+    }
+
+    int ret = select(max_vfs_fd + 1,
+                     readfds ? &vfs_r : NULL,
+                     writefds ? &vfs_w : NULL,
+                     exceptfds ? &vfs_e : NULL,
+                     timeout);
+
+    if (readfds) FD_ZERO(readfds);
+    if (writefds) FD_ZERO(writefds);
+    if (exceptfds) FD_ZERO(exceptfds);
+
+    if (ret > 0) {
+        int ready = 0;
+        for (int fd = 0; fd < nfds; fd++) {
+            int vfs_fd = proc_fd_get(p, fd);
+            if (vfs_fd >= 0) {
+                if (readfds && FD_ISSET(vfs_fd, &vfs_r))   { FD_SET(fd, readfds); ready++; }
+                if (writefds && FD_ISSET(vfs_fd, &vfs_w))  { FD_SET(fd, writefds); ready++; }
+                if (exceptfds && FD_ISSET(vfs_fd, &vfs_e)) { FD_SET(fd, exceptfds); ready++; }
+            }
+        }
+        return ready;
+    }
+    return ret;
+}
+
+int sys_pselect6(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
+                 const struct timespec *timeout, const void *sigmask)
+{
+    (void)sigmask;
+    struct timeval tv;
+    struct timeval *tv_p = NULL;
+    if (timeout) {
+        tv.tv_sec = (long)timeout->tv_sec;
+        tv.tv_usec = (long)(timeout->tv_nsec / 1000);
+        tv_p = &tv;
+    }
+    return sys_select(nfds, readfds, writefds, exceptfds, tv_p);
+}
+
+int sys_epoll_create1(int flags)
+{
+    int vfs_epfd = epoll_create1(flags);
+    if (vfs_epfd < 0) return vfs_epfd;
+
+    struct process *p = proc_current();
+    int proc_epfd = proc_fd_install(p, vfs_epfd);
+    if (proc_epfd < 0) {
+        close(vfs_epfd);
+        return proc_epfd;
+    }
+    return proc_epfd;
+}
+
+int sys_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
+{
+    struct process *p = proc_current();
+    if (!p) return -ESRCH;
+
+    int vfs_epfd = proc_fd_get(p, epfd);
+    if (vfs_epfd < 0) return -EBADF;
+
+    int vfs_target_fd = proc_fd_get(p, fd);
+    if (vfs_target_fd < 0) return -EBADF;
+
+    return epoll_ctl(vfs_epfd, op, vfs_target_fd, event);
+}
+
+int sys_epoll_pwait(int epfd, struct epoll_event *events, int maxevents, int timeout, const void *sigmask)
+{
+    (void)sigmask;
+    struct process *p = proc_current();
+    if (!p) return -ESRCH;
+
+    int vfs_epfd = proc_fd_get(p, epfd);
+    if (vfs_epfd < 0) return -EBADF;
+
+    return epoll_wait(vfs_epfd, events, maxevents, timeout);
+}
+
+/* =========================================================================
+ * Socket System Calls
+ * ========================================================================= */
+int sys_socket(int domain, int type, int protocol)
+{
+    int vfs_fd = socket(domain, type, protocol);
+    if (vfs_fd < 0) return vfs_fd;
+
+    struct process *p = proc_current();
+    int proc_fd = proc_fd_install(p, vfs_fd);
+    if (proc_fd < 0) {
+        close(vfs_fd);
+        return proc_fd;
+    }
+    return proc_fd;
+}
+
+int sys_bind(int sockfd, const void *addr, socklen_t addrlen)
+{
+    struct process *p = proc_current();
+    if (!p) return -ESRCH;
+    int vfs_fd = proc_fd_get(p, sockfd);
+    if (vfs_fd < 0) return -EBADF;
+    return bind(vfs_fd, addr, addrlen);
+}
+
+int sys_connect(int sockfd, const void *addr, socklen_t addrlen)
+{
+    struct process *p = proc_current();
+    if (!p) return -ESRCH;
+    int vfs_fd = proc_fd_get(p, sockfd);
+    if (vfs_fd < 0) return -EBADF;
+    return connect(vfs_fd, addr, addrlen);
+}
+
+int sys_listen(int sockfd, int backlog)
+{
+    struct process *p = proc_current();
+    if (!p) return -ESRCH;
+    int vfs_fd = proc_fd_get(p, sockfd);
+    if (vfs_fd < 0) return -EBADF;
+    return listen(vfs_fd, backlog);
+}
+
+int sys_accept(int sockfd, void *addr, socklen_t *addrlen)
+{
+    struct process *p = proc_current();
+    if (!p) return -ESRCH;
+    int vfs_fd = proc_fd_get(p, sockfd);
+    if (vfs_fd < 0) return -EBADF;
+
+    int new_vfs_fd = accept(vfs_fd, addr, addrlen);
+    if (new_vfs_fd < 0) return new_vfs_fd;
+
+    int proc_fd = proc_fd_install(p, new_vfs_fd);
+    if (proc_fd < 0) {
+        close(new_vfs_fd);
+        return proc_fd;
+    }
+    return proc_fd;
+}
+
+ssize_t sys_sendto(int sockfd, const void *buf, size_t len, int flags, const void *dest_addr, socklen_t addrlen)
+{
+    struct process *p = proc_current();
+    if (!p) return -ESRCH;
+    int vfs_fd = proc_fd_get(p, sockfd);
+    if (vfs_fd < 0) return -EBADF;
+    return sendto(vfs_fd, buf, len, flags, dest_addr, addrlen);
+}
+
+ssize_t sys_recvfrom(int sockfd, void *buf, size_t len, int flags, void *src_addr, socklen_t *addrlen)
+{
+    struct process *p = proc_current();
+    if (!p) return -ESRCH;
+    int vfs_fd = proc_fd_get(p, sockfd);
+    if (vfs_fd < 0) return -EBADF;
+    return recvfrom(vfs_fd, buf, len, flags, src_addr, addrlen);
+}
+
+int sys_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen)
+{
+    struct process *p = proc_current();
+    if (!p) return -ESRCH;
+    int vfs_fd = proc_fd_get(p, sockfd);
+    if (vfs_fd < 0) return -EBADF;
+    return setsockopt(vfs_fd, level, optname, optval, optlen);
+}
+
+int sys_getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optlen)
+{
+    struct process *p = proc_current();
+    if (!p) return -ESRCH;
+    int vfs_fd = proc_fd_get(p, sockfd);
+    if (vfs_fd < 0) return -EBADF;
+    return getsockopt(vfs_fd, level, optname, optval, optlen);
+}
+
+int sys_shutdown(int sockfd, int how)
+{
+    struct process *p = proc_current();
+    if (!p) return -ESRCH;
+    int vfs_fd = proc_fd_get(p, sockfd);
+    if (vfs_fd < 0) return -EBADF;
+    return shutdown(vfs_fd, how);
+}
+
 __attribute__((weak)) void cherry_trace_sys_enter(long id, long a0, long a1, long a2, long a3, long a4, long a5)
 {
     (void)id; (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
@@ -353,9 +609,6 @@ long cherry_syscall(long nr, long a0, long a1, long a2, long a3, long a4, long a
 
 static long cherry_syscall_internal(long nr, long a0, long a1, long a2, long a3, long a4, long a5)
 {
-    (void)a4;
-    (void)a5;
-
     switch (nr) {
     case __NR_getcwd:
         return (long)sys_getcwd((char *)a0, (size_t)a1);
@@ -439,6 +692,37 @@ static long cherry_syscall_internal(long nr, long a0, long a1, long a2, long a3,
         return -ENOSYS;
     case __NR_wait4:
         return (long)sys_wait4((pid_t)a0, (int *)a1, (int)a2, (void *)a3);
+    case __NR_epoll_create1:
+        return (long)sys_epoll_create1((int)a0);
+    case __NR_epoll_ctl:
+        return (long)sys_epoll_ctl((int)a0, (int)a1, (int)a2, (struct epoll_event *)a3);
+    case __NR_epoll_pwait:
+        return (long)sys_epoll_pwait((int)a0, (struct epoll_event *)a1, (int)a2, (int)a3, (const void *)a4);
+    case __NR_ppoll:
+        return (long)sys_ppoll((struct pollfd *)a0, (nfds_t)a1, (const struct timespec *)a2, (const void *)a3);
+    case __NR_pselect6:
+        return (long)sys_pselect6((int)a0, (fd_set *)a1, (fd_set *)a2, (fd_set *)a3, (const struct timespec *)a4, (const void *)a5);
+    case __NR_socket:
+        return (long)sys_socket((int)a0, (int)a1, (int)a2);
+    case __NR_bind:
+        return (long)sys_bind((int)a0, (const void *)a1, (socklen_t)a2);
+    case __NR_connect:
+        return (long)sys_connect((int)a0, (const void *)a1, (socklen_t)a2);
+    case __NR_listen:
+        return (long)sys_listen((int)a0, (int)a1);
+    case __NR_accept:
+    case __NR_accept4:
+        return (long)sys_accept((int)a0, (void *)a1, (socklen_t *)a2);
+    case __NR_sendto:
+        return (long)sys_sendto((int)a0, (const void *)a1, (size_t)a2, (int)a3, (const void *)a4, (socklen_t)a5);
+    case __NR_recvfrom:
+        return (long)sys_recvfrom((int)a0, (void *)a1, (size_t)a2, (int)a3, (void *)a4, (socklen_t *)a5);
+    case __NR_setsockopt:
+        return (long)sys_setsockopt((int)a0, (int)a1, (int)a2, (const void *)a3, (socklen_t)a4);
+    case __NR_getsockopt:
+        return (long)sys_getsockopt((int)a0, (int)a1, (int)a2, (void *)a3, (socklen_t *)a4);
+    case __NR_shutdown:
+        return (long)sys_shutdown((int)a0, (int)a1);
     default:
         return -ENOSYS;
     }

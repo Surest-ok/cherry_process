@@ -83,6 +83,8 @@ int applet_date(int argc, char **argv);
 int applet_true(int argc, char **argv);
 int applet_false(int argc, char **argv);
 int applet_hexdump(int argc, char **argv);
+int applet_wget(int argc, char **argv);
+int applet_iperf3(int argc, char **argv);
 int applet_sh(int argc, char **argv);
 
 #ifdef __cplusplus

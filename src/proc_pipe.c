@@ -139,14 +139,51 @@ static int pipe_write_close(struct vfs_file *file)
     return VFS_OK;
 }
 
+static int pipe_read_poll(struct vfs_file *file, void *poll_table)
+{
+    (void)poll_table;
+    if (!file || !file->f_private) return POLLNVAL;
+    struct cherry_pipe *pipe = (struct cherry_pipe *)file->f_private;
+
+    int mask = 0;
+    mutex_lock(&pipe->lock);
+    if (pipe->count > 0) {
+        mask |= POLLIN | POLLRDNORM;
+    }
+    if (pipe->writers == 0) {
+        mask |= POLLHUP;
+    }
+    mutex_unlock(&pipe->lock);
+    return mask;
+}
+
+static int pipe_write_poll(struct vfs_file *file, void *poll_table)
+{
+    (void)poll_table;
+    if (!file || !file->f_private) return POLLNVAL;
+    struct cherry_pipe *pipe = (struct cherry_pipe *)file->f_private;
+
+    int mask = 0;
+    mutex_lock(&pipe->lock);
+    if (pipe->readers == 0) {
+        mask |= POLLERR;
+    } else if (pipe->count < CHERRY_PIPE_BUF_SIZE) {
+        mask |= POLLOUT | POLLWRNORM;
+    }
+    mutex_unlock(&pipe->lock);
+    return mask;
+}
+
 static const struct vfs_file_operations g_pipe_read_fops = {
     .read  = pipe_read,
     .close = pipe_read_close,
+    .poll  = pipe_read_poll,
 };
 
 static const struct vfs_file_operations g_pipe_write_fops = {
     .write = pipe_write,
     .close = pipe_write_close,
+    .poll  = pipe_write_poll,
 };
 
 int cherry_pipe_create(int *out_read_vfs_fd, int *out_write_vfs_fd)
