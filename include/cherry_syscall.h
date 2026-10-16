@@ -20,6 +20,9 @@ extern "C" {
 
 /* Standard Linux AArch64 System Call Numbers (__NR_*) */
 #define __NR_getcwd             17
+#define __NR_epoll_create1      20
+#define __NR_epoll_ctl          21
+#define __NR_epoll_pwait        22
 #define __NR_dup                23
 #define __NR_dup3               24
 #define __NR_fcntl              25
@@ -38,6 +41,8 @@ extern "C" {
 #define __NR_write              64
 #define __NR_readv              65
 #define __NR_writev             66
+#define __NR_pselect6           72
+#define __NR_ppoll              73
 #define __NR_newfstatat         79
 #define __NR_fstat              80
 #define __NR_exit               93
@@ -58,10 +63,26 @@ extern "C" {
 #define __NR_geteuid            175
 #define __NR_getgid             176
 #define __NR_getegid            177
+#define __NR_socket             198
+#define __NR_socketpair         199
+#define __NR_bind               200
+#define __NR_listen             201
+#define __NR_accept             202
+#define __NR_connect            203
+#define __NR_getsockname        204
+#define __NR_getpeername        205
+#define __NR_sendto             206
+#define __NR_recvfrom           207
+#define __NR_setsockopt         208
+#define __NR_getsockopt         209
+#define __NR_shutdown           210
+#define __NR_sendmsg            211
+#define __NR_recvmsg            212
 #define __NR_brk                214
 #define __NR_munmap             215
 #define __NR_mmap               222
 #define __NR_mprotect           226
+#define __NR_accept4            242
 #define __NR_wait4              260
 #define __NR_prlimit64          261
 #define __NR_getrandom          278
@@ -85,7 +106,8 @@ struct utsname {
 };
 
 /* POSIX struct timespec */
-#ifndef _TIMESPEC_DECLARED
+#if !defined(_STRUCT_TIMESPEC) && !defined(_TIMESPEC_DECLARED)
+#define _STRUCT_TIMESPEC
 #define _TIMESPEC_DECLARED
 struct timespec {
     int64_t tv_sec;
@@ -137,6 +159,27 @@ int     sys_uname(struct utsname *buf);
 int     sys_nanosleep(const struct timespec *req, struct timespec *rem);
 int     sys_clock_gettime(int clk_id, struct timespec *tp);
 void   *sys_brk(void *addr);
+
+/* I/O Multiplexing System Calls */
+int     sys_poll(struct pollfd *fds, nfds_t nfds, int timeout);
+int     sys_ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *tmo_p, const void *sigmask);
+int     sys_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout);
+int     sys_pselect6(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, const struct timespec *timeout, const void *sigmask);
+int     sys_epoll_create1(int flags);
+int     sys_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
+int     sys_epoll_pwait(int epfd, struct epoll_event *events, int maxevents, int timeout, const void *sigmask);
+
+/* Socket System Calls */
+int     sys_socket(int domain, int type, int protocol);
+int     sys_bind(int sockfd, const void *addr, socklen_t addrlen);
+int     sys_connect(int sockfd, const void *addr, socklen_t addrlen);
+int     sys_listen(int sockfd, int backlog);
+int     sys_accept(int sockfd, void *addr, socklen_t *addrlen);
+ssize_t sys_sendto(int sockfd, const void *buf, size_t len, int flags, const void *dest_addr, socklen_t addrlen);
+ssize_t sys_recvfrom(int sockfd, void *buf, size_t len, int flags, void *src_addr, socklen_t *addrlen);
+int     sys_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen);
+int     sys_getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optlen);
+int     sys_shutdown(int sockfd, int how);
 
 /* Decoupled hardware / architecture trap frame for system calls */
 struct syscall_frame {

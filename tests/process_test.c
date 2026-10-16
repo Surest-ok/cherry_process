@@ -251,16 +251,24 @@ int cherry_process_run_tests(void)
     bool ok_sh = (busybox_run_cmd("sh -c 'echo shell_direct_ok'") == 0);
     if (ok_sh) bb_pass_count++;
 
+    /* (28) wget */
+    bool ok_wget = (busybox_run_cmd("wget") != 0);
+    if (ok_wget) bb_pass_count++;
+
+    /* (29) iperf3 */
+    bool ok_iperf3 = (busybox_run_cmd("iperf3") != 0);
+    if (ok_iperf3) bb_pass_count++;
+
     /* Multi-call binary invocation verification: busybox <applet> [args] */
     bool ok_multicall = (busybox_run_cmd("busybox echo multi_ok") == 0 &&
                          busybox_run_cmd("busybox uname -a") == 0 &&
                          busybox_run_cmd("busybox pwd") == 0);
 
-    if (bb_pass_count == 27 && ok_multicall) {
+    if (bb_pass_count == 29 && ok_multicall) {
         pass_applets = true;
     }
 
-    pr_info("cherry_process: [busybox-verify] %d/27 applets passed (multicall=%s)\n",
+    pr_info("cherry_process: [busybox-verify] %d/29 applets passed (multicall=%s)\n",
             bb_pass_count, ok_multicall ? "pass" : "fail");
 
     /* 7. Test BusyBox Shell Pipelines */
@@ -384,7 +392,42 @@ int cherry_process_run_tests(void)
             }
         }
 
-        if (exec_ret == 42 && elf_status == 42 && pass_native_elf && tid > 0 && rnd == 16 && wv == (long)strlen(hello_v)) {
+        /* (e) Test I/O Multiplexing System Calls (poll, epoll) on pipe */
+        int pfd[2] = {-1, -1};
+        bool pass_poll_sys = false;
+        if (sys_pipe2(pfd, 0) == 0) {
+            struct pollfd p_fds[1];
+            p_fds[0].fd = pfd[0];
+            p_fds[0].events = POLLIN;
+            p_fds[0].revents = 0;
+            int r_poll1 = sys_poll(p_fds, 1, 0);
+
+            sys_write(pfd[1], "A", 1);
+            p_fds[0].revents = 0;
+            int r_poll2 = sys_poll(p_fds, 1, 0);
+
+            int ep = sys_epoll_create1(0);
+            struct epoll_event ee;
+            ee.events = EPOLLIN;
+            ee.data.fd = pfd[0];
+            sys_epoll_ctl(ep, EPOLL_CTL_ADD, pfd[0], &ee);
+
+            struct epoll_event ee_out[2];
+            int r_ep = sys_epoll_pwait(ep, ee_out, 2, 0, NULL);
+
+            sys_close(ep);
+            char c;
+            sys_read(pfd[0], &c, 1);
+            sys_close(pfd[0]);
+            sys_close(pfd[1]);
+
+            if (r_poll1 == 0 && r_poll2 == 1 && (p_fds[0].revents & POLLIN) && r_ep == 1 && (ee_out[0].events & EPOLLIN)) {
+                pass_poll_sys = true;
+                pr_info("cherry_process: sys_poll and sys_epoll on pipe verified\n");
+            }
+        }
+
+        if (exec_ret == 42 && elf_status == 42 && pass_native_elf && tid > 0 && rnd == 16 && wv == (long)strlen(hello_v) && pass_poll_sys) {
             pass_elf = true;
         }
     }

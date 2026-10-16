@@ -590,3 +590,24 @@ int applet_hexdump(int argc, char **argv)
     sys_close(fd);
     return 0;
 }
+
+extern int cmd_wget(int argc, char **argv) __attribute__((weak));
+extern int cmd_iperf3(int argc, char **argv) __attribute__((weak));
+
+int applet_wget(int argc, char **argv)
+{
+    if (cmd_wget) {
+        return cmd_wget(argc, argv);
+    }
+    put_str("wget: networking subsystem unavailable\n");
+    return 1;
+}
+
+int applet_iperf3(int argc, char **argv)
+{
+    if (cmd_iperf3) {
+        return cmd_iperf3(argc, argv);
+    }
+    put_str("iperf3: networking subsystem unavailable\n");
+    return 1;
+}

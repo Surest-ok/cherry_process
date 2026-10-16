@@ -39,6 +39,8 @@ static const struct busybox_applet g_applets[] = {
     { "true",    applet_true,       "true" },
     { "false",   applet_false,      "false" },
     { "hexdump", applet_hexdump,    "hexdump [-C] FILE" },
+    { "wget",    applet_wget,       "wget [-O FILE] URL" },
+    { "iperf3",  applet_iperf3,     "iperf3 [-s] [-c HOST]" },
     { NULL,      NULL,              NULL }
 };
 
@@ -65,7 +67,7 @@ int busybox_main(int argc, char **argv)
         sys_write(1, "Currently defined functions:\n", 29);
         sys_write(1, "\tcat, cp, date, df, dmesg, echo, false, free, grep, head,\n", 59);
         sys_write(1, "\thexdump, kill, ls, mkdir, mv, ps, pwd, rm, rmdir, sh,\n", 56);
-        sys_write(1, "\tsleep, tail, touch, true, uname, wc\n\n", 37);
+        sys_write(1, "\tsleep, tail, touch, true, uname, wc, wget, iperf3\n\n", 50);
         return 0;
     }
 
