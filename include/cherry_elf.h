@@ -57,6 +57,74 @@ typedef struct {
     Elf64_Xword   p_align;
 } Elf64_Phdr;
 
+/* Section Header */
+typedef struct {
+    Elf64_Word    sh_name;
+    Elf64_Word    sh_type;
+    Elf64_Xword   sh_flags;
+    Elf64_Addr    sh_addr;
+    Elf64_Off     sh_offset;
+    Elf64_Xword   sh_size;
+    Elf64_Word    sh_link;
+    Elf64_Word    sh_info;
+    Elf64_Xword   sh_addralign;
+    Elf64_Xword   sh_entsize;
+} Elf64_Shdr;
+
+/* Section Types */
+#define SHT_NULL            0
+#define SHT_PROGBITS        1
+#define SHT_SYMTAB          2
+#define SHT_STRTAB          3
+#define SHT_RELA            4
+#define SHT_HASH            5
+#define SHT_DYNAMIC         6
+#define SHT_NOTE            7
+#define SHT_NOBITS          8
+#define SHT_REL             9
+#define SHT_SHLIB           10
+#define SHT_DYNSYM          11
+#define SHT_INIT_ARRAY      14
+#define SHT_FINI_ARRAY      15
+#define SHT_PREINIT_ARRAY   16
+
+
+/* Dynamic Structure */
+typedef struct {
+    Elf64_Sxword d_tag;
+    union {
+        Elf64_Xword d_val;
+        Elf64_Addr  d_ptr;
+    } d_un;
+} Elf64_Dyn;
+
+/* Dynamic tags */
+#define DT_NULL         0
+#define DT_NEEDED       1
+#define DT_PLTRELSZ     2
+#define DT_PLTGOT       3
+#define DT_HASH         4
+#define DT_STRTAB       5
+#define DT_SYMTAB       6
+#define DT_RELA         7
+#define DT_RELASZ       8
+#define DT_RELAENT      9
+#define DT_INIT_ARRAY   25
+#define DT_FINI_ARRAY   26
+#define DT_INIT_ARRAYSZ 27
+#define DT_FINI_ARRAYSZ 28
+
+/* Relocation Structure */
+typedef struct {
+    Elf64_Addr   r_offset;
+    Elf64_Xword  r_info;
+    Elf64_Sxword r_addend;
+} Elf64_Rela;
+
+#define R_AARCH64_NONE      0
+#define R_AARCH64_RELATIVE  1027
+#define R_AARCH64_IRELATIVE 1032
+
 /* e_ident indices */
 #define EI_MAG0         0
 #define EI_MAG1         1
@@ -133,13 +201,19 @@ typedef struct {
 /* Loaded ELF Binary Descriptor */
 struct elf_image {
     void     *raw_mem;          /* Pointer returned by kmalloc to free */
-    uintptr_t entry_point;      /* Virtual address of entry point */
+    uintptr_t entry_point;      /* Virtual address of entry point (CPU start PC) */
+    uintptr_t main_entry_point; /* Main executable entry point (for AT_ENTRY) */
     uintptr_t load_base;        /* Base address in physical RAM */
     size_t    total_size;       /* Memory footprint size */
     uintptr_t phdr_vaddr;       /* Address of loaded program headers */
     uint16_t  phnum;            /* Number of program headers */
     uint16_t  phentsize;        /* Size of each program header */
     bool      is_pie;           /* True if ET_DYN position-independent */
+    bool      has_interp;       /* True if dynamic linker PT_INTERP present */
+    char      interp_path[128]; /* Path to requested interpreter (e.g. /lib/ld-linux-aarch64.so.1) */
+    uintptr_t interp_base;      /* Base address where interpreter is loaded */
+    uintptr_t interp_entry;     /* Entry point of interpreter */
+    void     *interp_mem;       /* Memory allocated for interpreter */
 };
 
 /* =========================================================================

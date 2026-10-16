@@ -12,6 +12,7 @@
 #include "cherry_elf.h"
 #include "cherry_printk.h"
 #include "native_elf_bin.h"
+#include "native_nopie_bin.h"
 #include <string.h>
 
 static int dummy_worker_fn(int argc, char **argv)
@@ -56,6 +57,8 @@ int cherry_process_run_tests(void)
     bool pass_sh       = false;
     bool pass_smp_ps   = false;
     bool pass_elf      = false;
+    bool pass_native_nopie = false;
+    bool pass_dynamic_app  = false;
 
     sys_mkdir("/cherry_proc_test", 0755);
 
@@ -440,7 +443,56 @@ int cherry_process_run_tests(void)
             pr_info("cherry_process: original BusyBox ELF execution verified (status=0)\n");
         }
 
-        if (exec_ret == 42 && elf_status == 42 && pass_native_elf && pass_busybox_elf && tid > 0 && rnd == 16 && wv == (long)strlen(hello_v) && pass_poll_sys) {
+        /* (g) Test Native Linux Non-PIE (ET_EXEC) ELF Loading & Execution */
+        pass_native_nopie = false;
+        int nopie_fd = sys_open("/cherry_proc_test/native_nopie.elf", O_WRONLY | O_CREAT | O_TRUNC, 0755);
+        if (nopie_fd >= 0) {
+            sys_write(nopie_fd, _tmp_native_nopie_elf, _tmp_native_nopie_elf_len);
+            sys_close(nopie_fd);
+
+            pid_t nopie_pid = proc_spawn_elf("/cherry_proc_test/native_nopie.elf", 1, test_argv, test_envp, -1, -1, -1);
+            int nopie_status = 0;
+            if (nopie_pid > 0) {
+                proc_waitpid(nopie_pid, &nopie_status, 0);
+            }
+            if (nopie_status == 42) {
+                pass_native_nopie = true;
+                pr_info("cherry_process: native Linux non-PIE (ET_EXEC) ELF execution verified (status=42)\n");
+            } else {
+                pr_err("cherry_process: native non-PIE failed with status=%d\n", nopie_status);
+            }
+        }
+
+        /* (h) Test Dynamically Linked Application with Interpreter (PT_INTERP / ld.so) */
+        pass_dynamic_app = false;
+        sys_mkdir("/lib", 0755);
+        int ld_fd = sys_open("/lib/ld-linux-aarch64.so.1", O_WRONLY | O_CREAT | O_TRUNC, 0755);
+        if (ld_fd >= 0) {
+            sys_write(ld_fd, _tmp_ld_so_elf, _tmp_ld_so_elf_len);
+            sys_close(ld_fd);
+        }
+
+        int dyn_fd = sys_open("/cherry_proc_test/dynamic_app.elf", O_WRONLY | O_CREAT | O_TRUNC, 0755);
+        if (dyn_fd >= 0) {
+            sys_write(dyn_fd, _tmp_dynamic_app_elf, _tmp_dynamic_app_elf_len);
+            sys_close(dyn_fd);
+
+            pid_t dyn_pid = proc_spawn_elf("/cherry_proc_test/dynamic_app.elf", 1, test_argv, test_envp, -1, -1, -1);
+            int dyn_status = 0;
+            if (dyn_pid > 0) {
+                proc_waitpid(dyn_pid, &dyn_status, 0);
+            }
+            if (dyn_status == 42) {
+                pass_dynamic_app = true;
+                pr_info("cherry_process: dynamic linked ELF with PT_INTERP (ld.so) verified (status=42)\n");
+            } else {
+                pr_err("cherry_process: dynamic linked ELF failed with status=%d\n", dyn_status);
+            }
+        }
+
+        if (exec_ret == 42 && elf_status == 42 && pass_native_elf && pass_busybox_elf &&
+            pass_native_nopie && pass_dynamic_app &&
+            tid > 0 && rnd == 16 && wv == (long)strlen(hello_v) && pass_poll_sys) {
             pass_elf = true;
         }
     }
@@ -448,7 +500,7 @@ int cherry_process_run_tests(void)
     bool all_pass = pass_spawn && pass_wait && pass_fd && pass_pipe &&
                     pass_syscall && pass_applets && pass_sh && pass_smp_ps && pass_elf;
 
-    pr_info("cherry_process: [process-verify] spawn=%s wait=%s fd=%s pipe=%s syscall=%s applets=%s sh=%s smp_ps=%s elf_glibc=%s all=%s\n",
+    pr_info("cherry_process: [process-verify] spawn=%s wait=%s fd=%s pipe=%s syscall=%s applets=%s sh=%s smp_ps=%s elf_glibc=%s nopie=%s dyn=%s all=%s\n",
             pass_spawn ? "pass" : "fail",
             pass_wait ? "pass" : "fail",
             pass_fd ? "pass" : "fail",
@@ -458,7 +510,10 @@ int cherry_process_run_tests(void)
             pass_sh ? "pass" : "fail",
             pass_smp_ps ? "pass" : "fail",
             pass_elf ? "pass" : "fail",
+            pass_native_nopie ? "pass" : "fail",
+            pass_dynamic_app ? "pass" : "fail",
             all_pass ? "pass" : "fail");
 
     return all_pass ? 0 : -1;
 }
+

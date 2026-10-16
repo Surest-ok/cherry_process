@@ -403,11 +403,32 @@ static long sys_getrandom(void *buf, size_t buflen, unsigned int flags)
 
 static void *sys_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
 {
-    (void)addr; (void)prot; (void)flags; (void)fd; (void)offset;
+    (void)prot;
     if (length == 0) return (void *)-EINVAL;
-    void *ptr = kmalloc(length, GFP_KERNEL);
-    if (!ptr) return (void *)-ENOMEM;
-    memset(ptr, 0, length);
+
+    struct process *p = proc_current();
+    if (!p) return (void *)-ESRCH;
+
+    void *ptr = NULL;
+
+    /* MAP_FIXED (0x10): use caller-requested address buffer */
+    if ((flags & 0x10) && addr) {
+        ptr = addr;
+    } else {
+        ptr = kmalloc(length, GFP_KERNEL);
+        if (!ptr) return (void *)-ENOMEM;
+        memset(ptr, 0, length);
+    }
+
+    /* File-backed mapping for shared libraries (.so / dynamic linker) */
+    if (fd >= 0) {
+        int vfs_fd = proc_fd_get(p, fd);
+        if (vfs_fd >= 0) {
+            sys_lseek(vfs_fd, offset, 0);
+            sys_read(vfs_fd, ptr, length);
+        }
+    }
+
     return ptr;
 }
 
@@ -415,7 +436,25 @@ static int sys_munmap(void *addr, size_t length)
 {
     (void)length;
     if (!addr) return -EINVAL;
+    struct process *p = proc_current();
+    if (p && ((uintptr_t)addr >= p->heap_start && (uintptr_t)addr < p->heap_end)) {
+        return 0;
+    }
     kfree(addr);
+    return 0;
+}
+
+static int sys_prlimit64(pid_t pid, int resource, const void *new_limit, void *old_limit)
+{
+    (void)pid; (void)resource; (void)new_limit;
+    if (old_limit) {
+        struct {
+            uint64_t rlim_cur;
+            uint64_t rlim_max;
+        } *lim = (void *)old_limit;
+        lim->rlim_cur = 8 * 1024 * 1024;
+        lim->rlim_max = 8 * 1024 * 1024;
+    }
     return 0;
 }
 
@@ -784,8 +823,9 @@ static long cherry_syscall_internal(long nr, long a0, long a1, long a2, long a3,
     case __NR_munmap:
         return (long)sys_munmap((void *)a0, (size_t)a1);
     case __NR_mprotect:
-    case __NR_prlimit64:
         return 0;
+    case __NR_prlimit64:
+        return (long)sys_prlimit64((pid_t)a0, (int)a1, (const void *)a2, (void *)a3);
     case __NR_getrandom:
         return (long)sys_getrandom((void *)a0, (size_t)a1, (unsigned int)a2);
     case __NR_rseq:
@@ -860,3 +900,5 @@ long cherry_syscall_dispatch_trap(struct syscall_frame *frame)
     frame->x0 = (uint64_t)ret;
     return ret;
 }
+
+
