@@ -12,6 +12,9 @@
 #include "cherry_printk.h"
 #include <string.h>
 
+extern int snprintf(char *str, size_t size, const char *format, ...);
+
+
 #define ELF_PAGE_SIZE       4096
 #define ELF_ALIGN_UP(x, a)  (((x) + ((a) - 1)) & ~((a) - 1))
 #define ELF_ALIGN_DN(x, a)  ((x) & ~((a) - 1))
@@ -50,12 +53,17 @@ int proc_elf_validate(const void *buf, size_t size)
     return 0;
 }
 
-int proc_elf_load(const char *path, struct elf_image *img)
+static int proc_elf_load_binary(const char *path, void **out_mem, uintptr_t *out_base,
+                                size_t *out_size, uintptr_t *out_entry,
+                                uintptr_t *out_min_vaddr, uintptr_t *out_phdr_vaddr,
+                                uint16_t *out_phnum, uint16_t *out_phentsize,
+                                bool *out_is_pie, bool *out_has_interp,
+                                char *out_interp_path, size_t interp_path_size,
+                                size_t extra_heap_reserve)
 {
-    if (!path || !img) {
+    if (!path || !out_mem || !out_base || !out_size || !out_entry) {
         return -EINVAL;
     }
-    memset(img, 0, sizeof(struct elf_image));
 
     int fd = sys_open(path, O_RDONLY, 0);
     if (fd < 0) {
@@ -101,6 +109,9 @@ int proc_elf_load(const char *path, struct elf_image *img)
     uintptr_t min_vaddr = (uintptr_t)-1;
     uintptr_t max_vaddr = 0;
     int load_count = 0;
+    uintptr_t max_align = 65536;
+    bool has_interp = false;
+    uintptr_t phdr_vaddr_found = 0;
 
     for (int i = 0; i < ehdr.e_phnum; i++) {
         if (ph_table[i].p_type == PT_LOAD) {
@@ -109,6 +120,24 @@ int proc_elf_load(const char *path, struct elf_image *img)
             uintptr_t seg_end   = ph_table[i].p_vaddr + ph_table[i].p_memsz;
             if (seg_start < min_vaddr) min_vaddr = seg_start;
             if (seg_end > max_vaddr)   max_vaddr = seg_end;
+            if (ph_table[i].p_align > max_align) {
+                max_align = ph_table[i].p_align;
+            }
+        } else if (ph_table[i].p_type == PT_INTERP) {
+            has_interp = true;
+            if (out_interp_path && interp_path_size > 0) {
+                size_t path_len = ph_table[i].p_filesz;
+                if (path_len >= interp_path_size) {
+                    path_len = interp_path_size - 1;
+                }
+                sys_lseek(fd, (off_t)ph_table[i].p_offset, 0);
+                ssize_t ird = sys_read(fd, out_interp_path, path_len);
+                if (ird > 0) {
+                    out_interp_path[ird] = '\0';
+                } else {
+                    out_interp_path[0] = '\0';
+                }
+            }
         }
     }
 
@@ -118,37 +147,23 @@ int proc_elf_load(const char *path, struct elf_image *img)
         return -ENOEXEC;
     }
 
-    uintptr_t max_align = 65536;
-    for (int i = 0; i < ehdr.e_phnum; i++) {
-        if (ph_table[i].p_type == PT_LOAD && ph_table[i].p_align > max_align) {
-            max_align = ph_table[i].p_align;
-        }
-    }
-
     bool is_pie = (ehdr.e_type == ET_DYN);
     size_t span = ELF_ALIGN_UP(max_vaddr - min_vaddr, max_align);
-    size_t heap_reserve = 4 * 1024 * 1024; /* 4MB preallocated heap buffer for brk */
 
-    /* Allocate memory for program image and heap */
-    void *load_mem = kmalloc(span + max_align + heap_reserve, GFP_KERNEL);
+    /* Allocate memory for program image (plus heap reserve if requested) */
+    void *load_mem = kmalloc(span + max_align + extra_heap_reserve, GFP_KERNEL);
     if (!load_mem) {
         kfree(ph_table);
         sys_close(fd);
         return -ENOMEM;
     }
     uintptr_t base = ELF_ALIGN_UP((uintptr_t)load_mem, max_align);
-    memset((void *)base, 0, span + heap_reserve);
+    memset((void *)base, 0, span + extra_heap_reserve);
 
     /* Load each PT_LOAD segment */
     for (int i = 0; i < ehdr.e_phnum; i++) {
         if (ph_table[i].p_type == PT_LOAD) {
-            uintptr_t dest_addr;
-            if (is_pie) {
-                dest_addr = base + (ph_table[i].p_vaddr - min_vaddr);
-            } else {
-                /* If fixed executable address is within accessible memory */
-                dest_addr = base + (ph_table[i].p_vaddr - min_vaddr);
-            }
+            uintptr_t dest_addr = base + (ph_table[i].p_vaddr - min_vaddr);
 
             if (ph_table[i].p_filesz > 0) {
                 sys_lseek(fd, (off_t)ph_table[i].p_offset, 0);
@@ -166,25 +181,205 @@ int proc_elf_load(const char *path, struct elf_image *img)
                 size_t bss_sz = ph_table[i].p_memsz - ph_table[i].p_filesz;
                 memset((void *)(dest_addr + ph_table[i].p_filesz), 0, bss_sz);
             }
+        } else if (ph_table[i].p_type == PT_PHDR) {
+            phdr_vaddr_found = base + (ph_table[i].p_vaddr - min_vaddr);
+        }
+    }
+
+    intptr_t delta = (intptr_t)base - (intptr_t)min_vaddr;
+
+    /* Perform Non-PIE relocations if delta != 0 */
+    if (!is_pie && delta != 0) {
+        /* 1. Dynamic relocations (if PT_DYNAMIC is present) */
+        for (int i = 0; i < ehdr.e_phnum; i++) {
+            if (ph_table[i].p_type == PT_DYNAMIC) {
+                Elf64_Dyn *dyn = (Elf64_Dyn *)(base + (ph_table[i].p_vaddr - min_vaddr));
+                uintptr_t rela_vaddr = 0;
+                size_t rela_sz = 0;
+                size_t rela_ent = sizeof(Elf64_Rela);
+                uintptr_t init_arr_vaddr = 0;
+                size_t init_arr_sz = 0;
+                uintptr_t fini_arr_vaddr = 0;
+                size_t fini_arr_sz = 0;
+
+                while (dyn->d_tag != DT_NULL) {
+                    if (dyn->d_tag == DT_RELA) rela_vaddr = dyn->d_un.d_ptr;
+                    else if (dyn->d_tag == DT_RELASZ) rela_sz = dyn->d_un.d_val;
+                    else if (dyn->d_tag == DT_RELAENT) rela_ent = dyn->d_un.d_val;
+                    else if (dyn->d_tag == DT_INIT_ARRAY) init_arr_vaddr = dyn->d_un.d_ptr;
+                    else if (dyn->d_tag == DT_INIT_ARRAYSZ) init_arr_sz = dyn->d_un.d_val;
+                    else if (dyn->d_tag == DT_FINI_ARRAY) fini_arr_vaddr = dyn->d_un.d_ptr;
+                    else if (dyn->d_tag == DT_FINI_ARRAYSZ) fini_arr_sz = dyn->d_un.d_val;
+                    dyn++;
+                }
+
+                if (rela_vaddr && rela_sz && rela_ent >= sizeof(Elf64_Rela)) {
+                    size_t count = rela_sz / rela_ent;
+                    Elf64_Rela *r = (Elf64_Rela *)(base + (rela_vaddr - min_vaddr));
+                    for (size_t k = 0; k < count; k++) {
+                        uint32_t type = (uint32_t)(r[k].r_info & 0xffffffff);
+                        if (type == R_AARCH64_RELATIVE || type == R_AARCH64_IRELATIVE) {
+                            if (r[k].r_offset >= min_vaddr && r[k].r_offset < max_vaddr) {
+                                uintptr_t *loc = (uintptr_t *)(base + (r[k].r_offset - min_vaddr));
+                                *loc = (uintptr_t)(r[k].r_addend + delta);
+                            }
+                        }
+                    }
+                }
+
+                if (init_arr_vaddr && init_arr_sz) {
+                    size_t count = init_arr_sz / sizeof(uintptr_t);
+                    uintptr_t *arr = (uintptr_t *)(base + (init_arr_vaddr - min_vaddr));
+                    for (size_t k = 0; k < count; k++) {
+                        if (arr[k] >= min_vaddr && arr[k] < max_vaddr) {
+                            arr[k] += delta;
+                        }
+                    }
+                }
+
+                if (fini_arr_vaddr && fini_arr_sz) {
+                    size_t count = fini_arr_sz / sizeof(uintptr_t);
+                    uintptr_t *arr = (uintptr_t *)(base + (fini_arr_vaddr - min_vaddr));
+                    for (size_t k = 0; k < count; k++) {
+                        if (arr[k] >= min_vaddr && arr[k] < max_vaddr) {
+                            arr[k] += delta;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+
+        /* 2. Check Section Headers if present in file (for static non-PIE binaries) */
+        if (ehdr.e_shoff != 0 && ehdr.e_shnum > 0 && ehdr.e_shentsize == sizeof(Elf64_Shdr)) {
+            size_t shdr_bytes = ehdr.e_shnum * sizeof(Elf64_Shdr);
+            Elf64_Shdr *sh_table = (Elf64_Shdr *)kmalloc(shdr_bytes, GFP_KERNEL);
+            if (sh_table) {
+                sys_lseek(fd, (off_t)ehdr.e_shoff, 0);
+                if (sys_read(fd, sh_table, shdr_bytes) == (ssize_t)shdr_bytes) {
+                    for (int i = 0; i < ehdr.e_shnum; i++) {
+                        if (sh_table[i].sh_type == SHT_INIT_ARRAY || sh_table[i].sh_type == SHT_FINI_ARRAY) {
+                            if (sh_table[i].sh_addr >= min_vaddr && sh_table[i].sh_addr < max_vaddr) {
+                                size_t count = sh_table[i].sh_size / sizeof(uintptr_t);
+                                uintptr_t *arr = (uintptr_t *)(base + (sh_table[i].sh_addr - min_vaddr));
+                                for (size_t k = 0; k < count; k++) {
+                                    if (arr[k] >= min_vaddr && arr[k] < max_vaddr) {
+                                        arr[k] += delta;
+                                    }
+                                }
+                            }
+                        } else if (sh_table[i].sh_type == SHT_RELA) {
+                            size_t count = sh_table[i].sh_size / sizeof(Elf64_Rela);
+                            Elf64_Rela *relas = (Elf64_Rela *)kmalloc(sh_table[i].sh_size, GFP_KERNEL);
+                            if (relas) {
+                                sys_lseek(fd, (off_t)sh_table[i].sh_offset, 0);
+                                if (sys_read(fd, relas, sh_table[i].sh_size) == (ssize_t)sh_table[i].sh_size) {
+                                    for (size_t k = 0; k < count; k++) {
+                                        uint32_t type = (uint32_t)(relas[k].r_info & 0xffffffff);
+                                        if (type == R_AARCH64_RELATIVE || type == R_AARCH64_IRELATIVE) {
+                                            if (relas[k].r_offset >= min_vaddr && relas[k].r_offset < max_vaddr) {
+                                                uintptr_t *loc = (uintptr_t *)(base + (relas[k].r_offset - min_vaddr));
+                                                *loc = (uintptr_t)(relas[k].r_addend + delta);
+                                            }
+                                        }
+                                    }
+                                }
+                                kfree(relas);
+                            }
+                        }
+                    }
+                }
+                kfree(sh_table);
+            }
         }
     }
 
     sys_close(fd);
 
-    img->raw_mem     = load_mem;
-    img->load_base   = base;
-    img->total_size  = span;
-    img->is_pie      = is_pie;
-    img->entry_point = is_pie ? (base + (ehdr.e_entry - min_vaddr)) : (base + (ehdr.e_entry - min_vaddr));
-    img->phnum       = ehdr.e_phnum;
-    img->phentsize   = ehdr.e_phentsize;
-    img->phdr_vaddr  = base + ehdr.e_phoff;
+    *out_mem       = load_mem;
+    *out_base      = base;
+    *out_size      = span;
+    *out_entry     = base + (ehdr.e_entry - min_vaddr);
+    if (out_min_vaddr)   *out_min_vaddr = min_vaddr;
+    if (out_phdr_vaddr)  *out_phdr_vaddr = phdr_vaddr_found ? phdr_vaddr_found : (base + ehdr.e_phoff);
+    if (out_phnum)       *out_phnum = ehdr.e_phnum;
+    if (out_phentsize)   *out_phentsize = ehdr.e_phentsize;
+    if (out_is_pie)      *out_is_pie = is_pie;
+    if (out_has_interp)  *out_has_interp = has_interp;
 
     kfree(ph_table);
+    return 0;
+}
 
-    pr_info("proc_elf: loaded '%s' (base=0x%lx, entry=0x%lx, size=%lu bytes, pie=%d)\n",
+int proc_elf_load(const char *path, struct elf_image *img)
+{
+    if (!path || !img) {
+        return -EINVAL;
+    }
+    memset(img, 0, sizeof(struct elf_image));
+
+    uintptr_t min_vaddr = 0;
+    int ret = proc_elf_load_binary(path, &img->raw_mem, &img->load_base,
+                                   &img->total_size, &img->entry_point,
+                                   &min_vaddr, &img->phdr_vaddr,
+                                   &img->phnum, &img->phentsize,
+                                   &img->is_pie, &img->has_interp,
+                                   img->interp_path, sizeof(img->interp_path),
+                                   4 * 1024 * 1024 /* 4MB preallocated heap buffer for brk */);
+    if (ret != 0) {
+        return ret;
+    }
+
+    img->main_entry_point = img->entry_point;
+
+    /* If binary requests dynamic linker (PT_INTERP), load the interpreter */
+    if (img->has_interp) {
+        const char *candidates[4];
+        int num_cand = 0;
+        candidates[num_cand++] = img->interp_path;
+        if (strcmp(img->interp_path, "/lib/ld-linux-aarch64.so.1") != 0) {
+            candidates[num_cand++] = "/lib/ld-linux-aarch64.so.1";
+        }
+        if (strcmp(img->interp_path, "/usr/lib/ld-linux-aarch64.so.1") != 0) {
+            candidates[num_cand++] = "/usr/lib/ld-linux-aarch64.so.1";
+        }
+
+        int interp_ret = -ENOENT;
+        for (int i = 0; i < num_cand; i++) {
+            bool interp_pie = false;
+            bool dummy_interp = false;
+            char dummy_path[32];
+            uintptr_t dummy_min = 0, dummy_phdr = 0;
+            uint16_t dummy_phnum = 0, dummy_phent = 0;
+            size_t interp_sz = 0;
+
+            interp_ret = proc_elf_load_binary(candidates[i], &img->interp_mem,
+                                               &img->interp_base, &interp_sz,
+                                               &img->interp_entry, &dummy_min,
+                                               &dummy_phdr, &dummy_phnum, &dummy_phent,
+                                               &interp_pie, &dummy_interp,
+                                               dummy_path, sizeof(dummy_path), 0);
+            if (interp_ret == 0) {
+                pr_info("proc_elf: dynamic interpreter loaded from '%s' (base=0x%lx, entry=0x%lx)\n",
+                        candidates[i], (unsigned long)img->interp_base, (unsigned long)img->interp_entry);
+                break;
+            }
+        }
+
+        if (interp_ret != 0) {
+            pr_err("proc_elf: failed to load interpreter '%s' (err=%d)\n", img->interp_path, interp_ret);
+            proc_elf_unload(img);
+            return interp_ret;
+        }
+
+        /* Initial execution jump point is interpreter entry point */
+        img->entry_point = img->interp_entry;
+    }
+
+    pr_info("proc_elf: loaded '%s' (base=0x%lx, entry=0x%lx, main_entry=0x%lx, size=%lu bytes, pie=%d, interp=%s)\n",
             path, (unsigned long)img->load_base, (unsigned long)img->entry_point,
-            (unsigned long)img->total_size, img->is_pie);
+            (unsigned long)img->main_entry_point, (unsigned long)img->total_size,
+            img->is_pie, img->has_interp ? img->interp_path : "none");
 
     return 0;
 }
@@ -196,8 +391,13 @@ void proc_elf_unload(struct elf_image *img)
         kfree(img->raw_mem);
         img->raw_mem = NULL;
     }
+    if (img->interp_mem) {
+        kfree(img->interp_mem);
+        img->interp_mem = NULL;
+    }
     img->phdr_vaddr = 0;
 }
+
 
 uintptr_t proc_elf_setup_stack(uintptr_t stack_top, int argc, char **argv, char **envp,
                                const struct elf_image *img)
@@ -255,9 +455,9 @@ uintptr_t proc_elf_setup_stack(uintptr_t stack_top, int argc, char **argv, char 
         { AT_PHENT,         img->phentsize },
         { AT_PHNUM,         img->phnum },
         { AT_PAGESZ,        ELF_PAGE_SIZE },
-        { AT_BASE,          0 },
+        { AT_BASE,          img->has_interp ? img->interp_base : 0 },
         { AT_FLAGS,         0 },
-        { AT_ENTRY,         img->entry_point },
+        { AT_ENTRY,         img->main_entry_point },
         { AT_UID,           0 },
         { AT_EUID,          0 },
         { AT_GID,           0 },
@@ -265,6 +465,7 @@ uintptr_t proc_elf_setup_stack(uintptr_t stack_top, int argc, char **argv, char 
         { AT_SECURE,        0 },
         { AT_RANDOM,        at_random_ptr },
         { AT_CLKTCK,        100 },
+        { AT_EXECFN,        (argc > 0 && argv_ptrs[0]) ? argv_ptrs[0] : 0 },
         { AT_NULL,          0 }
     };
 
