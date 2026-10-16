@@ -452,7 +452,6 @@ long cherry_syscall_dispatch_trap(struct syscall_frame *frame)
 
     if (frame->x8 == __NR_exit || frame->x8 == __NR_exit_group) {
         int code = (int)frame->x0;
-        sys_exit(code);
         frame->pc = (uint64_t)cherry_arch_exit_elf;
         frame->x0 = (uint64_t)code;
         return code;
