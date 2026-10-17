@@ -188,8 +188,8 @@ static int proc_elf_load_binary(const char *path, void **out_mem, uintptr_t *out
 
     intptr_t delta = (intptr_t)base - (intptr_t)min_vaddr;
 
-    /* Perform Non-PIE relocations if delta != 0 */
-    if (!is_pie && delta != 0) {
+    /* Perform ELF relocations if loaded at offset delta != 0 (both PIE in flat memory and Non-PIE) */
+    if (delta != 0) {
         /* 1. Dynamic relocations (if PT_DYNAMIC is present) */
         for (int i = 0; i < ehdr.e_phnum; i++) {
             if (ph_table[i].p_type == PT_DYNAMIC) {
@@ -415,18 +415,31 @@ uintptr_t proc_elf_setup_stack(uintptr_t stack_top, int argc, char **argv, char 
     }
     uintptr_t at_random_ptr = sp;
 
-    /* 2. Count environment variables */
-    int envc = 0;
-    if (envp) {
-        while (envp[envc]) envc++;
+    /* 2. Determine environment variables (inject default POSIX/Ubuntu environment if none provided) */
+    static const char *s_default_envp[] = {
+        "PATH=/bin:/usr/bin:/sbin:/usr/sbin",
+        "LD_LIBRARY_PATH=/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu:/lib:/usr/lib",
+        "HOME=/root",
+        "USER=root",
+        "TERM=linux",
+        "SHELL=/bin/bash",
+        "PWD=/",
+        NULL
+    };
+    char **effective_envp = envp;
+    if (!effective_envp || !effective_envp[0]) {
+        effective_envp = (char **)s_default_envp;
     }
+
+    int envc = 0;
+    while (effective_envp[envc]) envc++;
 
     /* 3. Push string data for envp onto stack */
     uintptr_t envp_ptrs[PROC_MAX_ENVP];
     for (int i = envc - 1; i >= 0; i--) {
-        size_t len = strlen(envp[i]) + 1;
+        size_t len = strlen(effective_envp[i]) + 1;
         sp -= len;
-        memcpy((void *)sp, envp[i], len);
+        memcpy((void *)sp, effective_envp[i], len);
         envp_ptrs[i] = sp;
     }
 
@@ -464,6 +477,7 @@ uintptr_t proc_elf_setup_stack(uintptr_t stack_top, int argc, char **argv, char 
         { AT_EGID,          0 },
         { AT_SECURE,        0 },
         { AT_RANDOM,        at_random_ptr },
+        { AT_HWCAP,         0xff },
         { AT_CLKTCK,        100 },
         { AT_EXECFN,        (argc > 0 && argv_ptrs[0]) ? argv_ptrs[0] : 0 },
         { AT_NULL,          0 }

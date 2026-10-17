@@ -88,10 +88,36 @@ extern "C" {
 #define __NR_mprotect           226
 #define __NR_accept4            242
 #define __NR_wait4              260
+#define __NR_faccessat          48
+#define __NR_setpgid            154
+#define __NR_getpgid            155
+#define __NR_umask              166
+#define __NR_sysinfo            179
+#define __NR_clone              220
+#define __NR_execve             221
 #define __NR_prlimit64          261
 #define __NR_getrandom          278
 #define __NR_statx              291
 #define __NR_rseq               293
+#define __NR_faccessat2         439
+
+/* Linux sysinfo structure */
+struct linux_sysinfo {
+    long uptime;             /* Seconds since boot */
+    unsigned long loads[3];  /* 1, 5, and 15 minute load averages */
+    unsigned long totalram;  /* Total usable main memory size */
+    unsigned long freeram;   /* Available memory size */
+    unsigned long sharedram; /* Amount of shared memory */
+    unsigned long bufferram; /* Memory used by buffers */
+    unsigned long totalswap; /* Total swap space size */
+    unsigned long freeswap;  /* Swap space still available */
+    unsigned short procs;    /* Number of current processes */
+    unsigned short pad;
+    unsigned long totalhigh;
+    unsigned long freehigh;
+    unsigned int mem_unit;   /* Memory unit size in bytes */
+    char _f[20-2*sizeof(long)-sizeof(int)];
+};
 
 /* POSIX struct iovec */
 struct iovec {
