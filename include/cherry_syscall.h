@@ -59,6 +59,7 @@ extern "C" {
 #define __NR_kill               129
 #define __NR_rt_sigaction       134
 #define __NR_rt_sigprocmask     135
+#define __NR_rt_sigpending      136
 #define __NR_uname              160
 #define __NR_gettimeofday       169
 #define __NR_getpid             172

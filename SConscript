@@ -21,6 +21,8 @@ proc_env.Append(CPPPATH=[
 
 sources = [
     'src/proc_core.c',
+    'src/proc_vma.c',
+    'src/proc_signal.c',
     'src/proc_pipe.c',
     'src/proc_syscall.c',
     'src/busybox_core.c',

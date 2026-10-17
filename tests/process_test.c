@@ -53,6 +53,9 @@ int cherry_process_run_tests(void)
     bool pass_fd       = false;
     bool pass_pipe     = false;
     bool pass_syscall  = false;
+    bool pass_uaccess  = false;
+    bool pass_vma      = false;
+    bool pass_signal   = false;
     bool pass_applets  = false;
     bool pass_sh       = false;
     bool pass_smp_ps   = false;
@@ -126,6 +129,55 @@ int cherry_process_run_tests(void)
 
     if (cur_pid > 0 && un_ret == 0 && (strcmp(un.sysname, "CherryOS") == 0 || strcmp(un.sysname, "Linux") == 0) && cwd_ret == 0 && strlen(cwd_buf) > 0) {
         pass_syscall = true;
+    }
+
+    /* 5.1 Test UAccess Security Gateway */
+    char u_kbuf[32] = "kernel_data";
+    if (!access_ok(VERIFY_READ, (void *)0x10, 32) &&
+        !access_ok(VERIFY_WRITE, (void *)0x0, 1) &&
+        access_ok(VERIFY_READ, u_kbuf, sizeof(u_kbuf))) {
+        char dst_buf[32];
+        unsigned long uncopied = copy_from_user(dst_buf, (void *)0x10, sizeof(dst_buf));
+        if (uncopied == sizeof(dst_buf)) {
+            ssize_t bad_r = sys_read(0, (void *)0x20, 16);
+            ssize_t bad_w = sys_write(1, (void *)0x20, 16);
+            if (bad_r == -EFAULT && bad_w == -EFAULT) {
+                pass_uaccess = true;
+            }
+        }
+    }
+
+    /* 5.2 Test VMA Subsystem */
+    struct process *cur_p = proc_current();
+    void *vma_m = do_mmap(cur_p, NULL, 4096, PROT_READ | PROT_WRITE, MAP_ANONYMOUS, -1, 0);
+    if (vma_m != MAP_FAILED && vma_m != NULL) {
+        struct vm_area_struct *found_vma = vma_find(cur_p, (uintptr_t)vma_m);
+        int v_cnt = vma_count(cur_p);
+        if (found_vma && found_vma->vm_start == (uintptr_t)vma_m && v_cnt >= 1) {
+            do_mprotect(cur_p, vma_m, 4096, PROT_READ);
+            if (found_vma->vm_prot == PROT_READ) {
+                do_munmap(cur_p, vma_m, 4096);
+                pass_vma = true;
+            }
+        }
+    }
+
+    /* 5.3 Test POSIX Signal Architecture */
+    struct sigaction sa, old_sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_IGN;
+    if (sys_rt_sigaction(SIGUSR1, &sa, &old_sa, 8) == 0) {
+        sigset_t bmask = (1U << SIGUSR2);
+        sigset_t old_bmask = 0;
+        if (sys_rt_sigprocmask(SIG_BLOCK, &bmask, &old_bmask, 8) == 0) {
+            proc_signal_send(sys_getpid(), SIGUSR2);
+            sigset_t pset = 0;
+            if (sys_rt_sigpending(&pset, 8) == 0 && (pset & (1U << SIGUSR2))) {
+                sys_rt_sigprocmask(SIG_UNBLOCK, &bmask, NULL, 8);
+                pass_signal = true;
+            }
+        }
+        sys_rt_sigaction(SIGUSR1, &old_sa, NULL, 8);
     }
 
     /* 6. Test ALL 27 BusyBox Applets via Process Execution & Multi-call Architecture */
@@ -529,14 +581,18 @@ int cherry_process_run_tests(void)
     }
 
     bool all_pass = pass_spawn && pass_wait && pass_fd && pass_pipe &&
-                    pass_syscall && pass_applets && pass_sh && pass_smp_ps && pass_elf;
+                    pass_syscall && pass_uaccess && pass_vma && pass_signal &&
+                    pass_applets && pass_sh && pass_smp_ps && pass_elf;
 
-    pr_info("cherry_process: [process-verify] spawn=%s wait=%s fd=%s pipe=%s syscall=%s applets=%s sh=%s smp_ps=%s elf_glibc=%s nopie=%s dyn=%s all=%s\n",
+    pr_info("cherry_process: [process-verify] spawn=%s wait=%s fd=%s pipe=%s syscall=%s uaccess=%s vma=%s sig=%s applets=%s sh=%s smp_ps=%s elf_glibc=%s nopie=%s dyn=%s all=%s\n",
             pass_spawn ? "pass" : "fail",
             pass_wait ? "pass" : "fail",
             pass_fd ? "pass" : "fail",
             pass_pipe ? "pass" : "fail",
             pass_syscall ? "pass" : "fail",
+            pass_uaccess ? "pass" : "fail",
+            pass_vma ? "pass" : "fail",
+            pass_signal ? "pass" : "fail",
             pass_applets ? "pass" : "fail",
             pass_sh ? "pass" : "fail",
             pass_smp_ps ? "pass" : "fail",

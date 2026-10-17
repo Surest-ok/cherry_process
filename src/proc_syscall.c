@@ -73,6 +73,7 @@ int sys_close(int fd)
 
 ssize_t sys_read(int fd, void *buf, size_t count)
 {
+    if (count > 0 && !access_ok(VERIFY_WRITE, buf, count)) return -EFAULT;
     struct process *p = proc_current();
     int vfs_fd = proc_fd_get(p, fd);
     if (vfs_fd < 0) return -EBADF;
@@ -81,6 +82,7 @@ ssize_t sys_read(int fd, void *buf, size_t count)
 
 ssize_t sys_write(int fd, const void *buf, size_t count)
 {
+    if (count > 0 && !access_ok(VERIFY_READ, buf, count)) return -EFAULT;
     struct process *p = proc_current();
     int vfs_fd = proc_fd_get(p, fd);
     if (vfs_fd >= 0) {
@@ -114,6 +116,7 @@ off_t sys_lseek(int fd, off_t offset, int whence)
 int sys_stat(const char *path, struct stat *buf)
 {
     if (!path || !buf) return -EINVAL;
+    if (!access_ok(VERIFY_WRITE, buf, sizeof(struct stat))) return -EFAULT;
     char full_path[VFS_PATH_MAX];
     resolve_path(path, full_path, sizeof(full_path));
     return stat(full_path, buf);
@@ -122,6 +125,7 @@ int sys_stat(const char *path, struct stat *buf)
 int sys_fstat(int fd, struct stat *buf)
 {
     if (!buf) return -EINVAL;
+    if (!access_ok(VERIFY_WRITE, buf, sizeof(struct stat))) return -EFAULT;
     struct process *p = proc_current();
     int vfs_fd = proc_fd_get(p, fd);
     if (vfs_fd < 0) {
@@ -223,6 +227,8 @@ int sys_unlink(const char *path)
 
 int sys_getcwd(char *buf, size_t size)
 {
+    if (!buf || size == 0) return -EINVAL;
+    if (!access_ok(VERIFY_WRITE, buf, size)) return -EFAULT;
     return proc_get_cwd(buf, size);
 }
 
@@ -257,7 +263,7 @@ pid_t sys_wait4(pid_t pid, int *wstatus, int options, void *rusage)
 
 int sys_kill(pid_t pid, int sig)
 {
-    return proc_kill(pid, sig);
+    return proc_signal_send(pid, sig);
 }
 
 int sys_uname(struct utsname *buf)
@@ -872,8 +878,11 @@ static long cherry_syscall_internal(long nr, long a0, long a1, long a2, long a3,
     case __NR_kill:
         return (long)sys_kill((pid_t)a0, (int)a1);
     case __NR_rt_sigaction:
+        return (long)sys_rt_sigaction((int)a0, (const struct sigaction *)a1, (struct sigaction *)a2, (size_t)a3);
     case __NR_rt_sigprocmask:
-        return 0;
+        return (long)sys_rt_sigprocmask((int)a0, (const sigset_t *)a1, (sigset_t *)a2, (size_t)a3);
+    case __NR_rt_sigpending:
+        return (long)sys_rt_sigpending((sigset_t *)a0, (size_t)a1);
     case __NR_uname:
         return (long)sys_uname((struct utsname *)a0);
     case __NR_getpid:
