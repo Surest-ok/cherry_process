@@ -83,15 +83,31 @@ ssize_t sys_write(int fd, const void *buf, size_t count)
 {
     struct process *p = proc_current();
     int vfs_fd = proc_fd_get(p, fd);
-    if (vfs_fd < 0) return -EBADF;
-    return write(vfs_fd, buf, count);
+    if (vfs_fd >= 0) {
+        ssize_t ret = write(vfs_fd, buf, count);
+        if (ret >= 0) return ret;
+    }
+
+    /* Fallback for stdout (1) and stderr (2) to direct UART output */
+    if ((fd == 1 || fd == 2) && buf) {
+        const char *cbuf = (const char *)buf;
+        for (size_t i = 0; i < count; i++) {
+            if (cbuf[i] == '\n') uart_putc('\r');
+            uart_putc(cbuf[i]);
+        }
+        return (ssize_t)count;
+    }
+    return -EBADF;
 }
 
 off_t sys_lseek(int fd, off_t offset, int whence)
 {
     struct process *p = proc_current();
     int vfs_fd = proc_fd_get(p, fd);
-    if (vfs_fd < 0) return -EBADF;
+    if (vfs_fd < 0) {
+        if (fd == 0 || fd == 1 || fd == 2) return -ESPIPE;
+        return -EBADF;
+    }
     return lseek(vfs_fd, offset, whence);
 }
 
@@ -108,7 +124,15 @@ int sys_fstat(int fd, struct stat *buf)
     if (!buf) return -EINVAL;
     struct process *p = proc_current();
     int vfs_fd = proc_fd_get(p, fd);
-    if (vfs_fd < 0) return -EBADF;
+    if (vfs_fd < 0) {
+        if (fd == 0 || fd == 1 || fd == 2) {
+            memset(buf, 0, sizeof(*buf));
+            buf->st_mode = S_IFCHR | 0666;
+            buf->st_nlink = 1;
+            return 0;
+        }
+        return -EBADF;
+    }
     return fstat(vfs_fd, buf);
 }
 
@@ -116,8 +140,15 @@ int sys_ioctl(int fd, unsigned long req, void *arg)
 {
     struct process *p = proc_current();
     int vfs_fd = proc_fd_get(p, fd);
-    if (vfs_fd < 0) return -EBADF;
-    return ioctl(vfs_fd, (unsigned int)req, arg);
+    if (vfs_fd < 0) {
+        if (fd == 0 || fd == 1 || fd == 2) return -ENOTTY;
+        return -EBADF;
+    }
+    int ret = ioctl(vfs_fd, (unsigned int)req, arg);
+    if (ret < 0 && (fd == 0 || fd == 1 || fd == 2)) {
+        return -ENOTTY;
+    }
+    return ret;
 }
 
 int sys_pipe2(int pipefd[2], int flags)
@@ -424,8 +455,8 @@ static void *sys_mmap(void *addr, size_t length, int prot, int flags, int fd, of
     if (fd >= 0) {
         int vfs_fd = proc_fd_get(p, fd);
         if (vfs_fd >= 0) {
-            sys_lseek(vfs_fd, offset, 0);
-            sys_read(vfs_fd, ptr, length);
+            lseek(vfs_fd, offset, 0);
+            read(vfs_fd, ptr, length);
         }
     }
 
@@ -435,12 +466,10 @@ static void *sys_mmap(void *addr, size_t length, int prot, int flags, int fd, of
 static int sys_munmap(void *addr, size_t length)
 {
     (void)length;
-    if (!addr) return -EINVAL;
-    struct process *p = proc_current();
-    if (p && ((uintptr_t)addr >= p->heap_start && (uintptr_t)addr < p->heap_end)) {
-        return 0;
-    }
-    kfree(addr);
+    (void)addr;
+    /* In flat memory model without MMU paging, partial/interior pointer munmap cannot be passed to vPortFree directly.
+     * Process memory allocations are reclaimed upon process exit.
+     */
     return 0;
 }
 
@@ -456,6 +485,46 @@ static int sys_prlimit64(pid_t pid, int resource, const void *new_limit, void *o
         lim->rlim_max = 8 * 1024 * 1024;
     }
     return 0;
+}
+
+int sys_faccessat(int dirfd, const char *pathname, int mode, int flags)
+{
+    (void)dirfd; (void)flags; (void)mode;
+    if (!pathname) return -EINVAL;
+    struct stat st;
+    int ret = sys_stat(pathname, &st);
+    if (ret != 0) return -ENOENT;
+    return 0;
+}
+
+int sys_sysinfo(struct linux_sysinfo *info)
+{
+    if (!info) return -EINVAL;
+    memset(info, 0, sizeof(*info));
+    info->uptime = (long)(ktime_get_real_ns() / 1000000000ULL);
+    info->totalram = 512 * 1024 * 1024;
+    info->freeram = 384 * 1024 * 1024;
+    info->procs = 5;
+    info->mem_unit = 1;
+    return 0;
+}
+
+pid_t sys_getpgid(pid_t pid)
+{
+    if (pid == 0) return sys_getpid();
+    return pid;
+}
+
+int sys_setpgid(pid_t pid, pid_t pgid)
+{
+    (void)pid; (void)pgid;
+    return 0;
+}
+
+mode_t sys_umask(mode_t mask)
+{
+    (void)mask;
+    return 0022;
 }
 
 /* =========================================================================
@@ -816,6 +885,17 @@ static long cherry_syscall_internal(long nr, long a0, long a1, long a2, long a3,
     case __NR_getgid:
     case __NR_getegid:
         return 0;
+    case __NR_faccessat:
+    case __NR_faccessat2:
+        return (long)sys_faccessat((int)a0, (const char *)a1, (int)a2, (int)a3);
+    case __NR_sysinfo:
+        return (long)sys_sysinfo((struct linux_sysinfo *)a0);
+    case __NR_getpgid:
+        return (long)sys_getpgid((pid_t)a0);
+    case __NR_setpgid:
+        return (long)sys_setpgid((pid_t)a0, (pid_t)a1);
+    case __NR_umask:
+        return (long)sys_umask((mode_t)a0);
     case __NR_brk:
         return (long)sys_brk((void *)a0);
     case __NR_mmap:

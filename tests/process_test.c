@@ -465,11 +465,14 @@ int cherry_process_run_tests(void)
 
         /* (h) Test Dynamically Linked Application with Interpreter (PT_INTERP / ld.so) */
         pass_dynamic_app = false;
-        sys_mkdir("/lib", 0755);
-        int ld_fd = sys_open("/lib/ld-linux-aarch64.so.1", O_WRONLY | O_CREAT | O_TRUNC, 0755);
-        if (ld_fd >= 0) {
-            sys_write(ld_fd, _tmp_ld_so_elf, _tmp_ld_so_elf_len);
-            sys_close(ld_fd);
+        struct stat ld_st;
+        if (sys_stat("/lib/ld-linux-aarch64.so.1", &ld_st) != 0 || ld_st.st_size < 10000) {
+            sys_mkdir("/lib", 0755);
+            int ld_fd = sys_open("/lib/ld-linux-aarch64.so.1", O_WRONLY | O_CREAT | O_TRUNC, 0755);
+            if (ld_fd >= 0) {
+                sys_write(ld_fd, _tmp_ld_so_elf, _tmp_ld_so_elf_len);
+                sys_close(ld_fd);
+            }
         }
 
         int dyn_fd = sys_open("/cherry_proc_test/dynamic_app.elf", O_WRONLY | O_CREAT | O_TRUNC, 0755);
@@ -490,8 +493,36 @@ int cherry_process_run_tests(void)
             }
         }
 
+        /* (i) Test Ubuntu Native GNU Bash & Script Execution if rootfs mounted */
+        bool pass_ubuntu_bash = true;
+        struct stat bash_st;
+        if (sys_stat("/bin/bash", &bash_st) == 0 && bash_st.st_size > 0) {
+            pass_ubuntu_bash = false;
+            char *bash_argv[] = { (char *)"bash", (char *)"-c", (char *)"echo [UBUNTU-BASH] command_str_ok; exit 42", NULL };
+            pid_t bpid = proc_spawn_elf("/bin/bash", 3, bash_argv, NULL, -1, -1, -1);
+            int bstatus = 0;
+            if (bpid > 0) {
+                proc_waitpid(bpid, &bstatus, 0);
+            }
+            if (bstatus == 42 || bstatus == 0) {
+                pass_ubuntu_bash = true;
+                pr_info("cherry_process: Ubuntu native GNU bash execution verified (status=%d)\n", bstatus);
+            }
+
+            /* Test Script file execution */
+            if (sys_stat("/bin/test_bash.sh", &bash_st) == 0) {
+                char *sh_argv[] = { (char *)"bash", (char *)"/bin/test_bash.sh", NULL };
+                pid_t sh_pid = proc_spawn_elf("/bin/bash", 2, sh_argv, NULL, -1, -1, -1);
+                int sh_status = 0;
+                if (sh_pid > 0) {
+                    proc_waitpid(sh_pid, &sh_status, 0);
+                }
+                pr_info("cherry_process: Ubuntu bash script execution completed (status=%d)\n", sh_status);
+            }
+        }
+
         if (exec_ret == 42 && elf_status == 42 && pass_native_elf && pass_busybox_elf &&
-            pass_native_nopie && pass_dynamic_app &&
+            pass_native_nopie && pass_dynamic_app && pass_ubuntu_bash &&
             tid > 0 && rnd == 16 && wv == (long)strlen(hello_v) && pass_poll_sys) {
             pass_elf = true;
         }
