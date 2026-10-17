@@ -61,6 +61,8 @@ int cherry_process_init(void)
     init_p->task = kthread_current();
     strncpy(init_p->cwd, "/", VFS_PATH_MAX - 1);
     sema_init(&init_p->wait_sem, 0);
+    vma_init(init_p);
+    proc_signal_init(init_p);
     kthread_set_data(init_p);
 
     /* Open default stdio for init process */
@@ -166,6 +168,8 @@ pid_t proc_spawn_ex(const char *name, proc_entry_fn entry, int argc, char **argv
     strncpy(child->name, name, PROC_NAME_LEN - 1);
     strncpy(child->exec_path, name, VFS_PATH_MAX - 1);
     sema_init(&child->wait_sem, 0);
+    vma_init(child);
+    proc_signal_init(child);
 
     /* Inherit CWD */
     if (parent) {
@@ -289,9 +293,19 @@ static void proc_exit_internal(struct process *p, int exit_code)
         }
     }
 
+    /* Destroy all VMAs mapped by this process */
+    vma_destroy_all(p);
+
+    pid_t parent_pid = p->ppid;
+
     /* Wake up waiting parent */
     up(&p->wait_sem);
     mutex_unlock(&g_proc_lock);
+
+    /* Send POSIX SIGCHLD to parent process */
+    if (parent_pid > 0) {
+        proc_signal_send(parent_pid, SIGCHLD);
+    }
 }
 
 void proc_exit(int exit_code)

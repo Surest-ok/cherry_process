@@ -19,6 +19,9 @@
 #include <stdbool.h>
 #include "cherry_kal.h"
 #include "cherry_vfs.h"
+#include "cherry_uaccess.h"
+#include "cherry_vma.h"
+#include "cherry_signal.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -85,6 +88,14 @@ struct process {
     char                exec_path[VFS_PATH_MAX];/* Executable full path */
     void               *priv;                   /* Private process context / loader data */
     uintptr_t           host_sp;                /* Saved host SP for ELF execution */
+
+    /* Virtual Memory Areas (VMA) */
+    struct vm_area_struct *vma_list;            /* Linked list of mapped VMAs */
+
+    /* POSIX Signal Architecture */
+    sigset_t            sig_pending;            /* Pending unhandled signals mask */
+    sigset_t            sig_blocked;            /* Blocked signal mask (sigprocmask) */
+    struct sigaction    sig_actions[CHERRY_NSIG];/* Signal disposition table */
 
     /* Accounting & Timing */
     uint64_t            start_time_ms;
