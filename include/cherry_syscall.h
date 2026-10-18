@@ -55,6 +55,8 @@ extern "C" {
 #define __NR_nanosleep          101
 #define __NR_setitimer          103
 #define __NR_clock_gettime      113
+#define __NR_sched_setaffinity  122
+#define __NR_sched_getaffinity  123
 #define __NR_sched_yield        124
 #define __NR_kill               129
 #define __NR_rt_sigaction       134

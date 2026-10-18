@@ -127,7 +127,13 @@ int cherry_process_run_tests(void)
     char cwd_buf[128];
     long cwd_ret = cherry_syscall(__NR_getcwd, (long)cwd_buf, (long)sizeof(cwd_buf), 0, 0, 0, 0);
 
-    if (cur_pid > 0 && un_ret == 0 && (strcmp(un.sysname, "CherryOS") == 0 || strcmp(un.sysname, "Linux") == 0) && cwd_ret == 0 && strlen(cwd_buf) > 0) {
+    unsigned long aff_mask = 0;
+    long getaff_ret = cherry_syscall(__NR_sched_getaffinity, 0, sizeof(aff_mask), (long)&aff_mask, 0, 0, 0);
+    long setaff_ret = cherry_syscall(__NR_sched_setaffinity, 0, sizeof(aff_mask), (long)&aff_mask, 0, 0, 0);
+
+    if (cur_pid > 0 && un_ret == 0 && (strcmp(un.sysname, "CherryOS") == 0 || strcmp(un.sysname, "Linux") == 0) &&
+        cwd_ret == 0 && strlen(cwd_buf) > 0 &&
+        getaff_ret == 0 && setaff_ret == 0 && aff_mask != 0) {
         pass_syscall = true;
     }
 

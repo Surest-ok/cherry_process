@@ -790,6 +790,44 @@ int sys_shutdown(int sockfd, int how)
     return shutdown(vfs_fd, how);
 }
 
+int sys_sched_setaffinity(pid_t pid, size_t cpusetsize, const unsigned long *mask)
+{
+    if (!mask || cpusetsize == 0) return -EINVAL;
+    if (!access_ok(VERIFY_READ, mask, sizeof(unsigned long))) return -EFAULT;
+    unsigned long kmask = 0;
+    if (copy_from_user(&kmask, mask, sizeof(unsigned long)) != 0) return -EFAULT;
+
+    struct task_struct *target_task = NULL;
+    if (pid == 0) {
+        struct process *cur = proc_current();
+        target_task = (cur && cur->task) ? cur->task : NULL;
+    } else {
+        struct process *p = proc_get_by_pid(pid);
+        if (!p) return -ESRCH;
+        target_task = p->task;
+    }
+    return kthread_set_affinity_mask(target_task, kmask);
+}
+
+int sys_sched_getaffinity(pid_t pid, size_t cpusetsize, unsigned long *mask)
+{
+    if (!mask || cpusetsize < sizeof(unsigned long)) return -EINVAL;
+    if (!access_ok(VERIFY_WRITE, mask, sizeof(unsigned long))) return -EFAULT;
+
+    struct task_struct *target_task = NULL;
+    if (pid == 0) {
+        struct process *cur = proc_current();
+        target_task = (cur && cur->task) ? cur->task : NULL;
+    } else {
+        struct process *p = proc_get_by_pid(pid);
+        if (!p) return -ESRCH;
+        target_task = p->task;
+    }
+    unsigned long kmask = kthread_get_affinity_mask(target_task);
+    if (copy_to_user(mask, &kmask, sizeof(unsigned long)) != 0) return -EFAULT;
+    return 0;
+}
+
 __attribute__((weak)) void cherry_trace_sys_enter(long id, long a0, long a1, long a2, long a3, long a4, long a5)
 {
     (void)id; (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
@@ -876,6 +914,10 @@ static long cherry_syscall_internal(long nr, long a0, long a1, long a2, long a3,
     case __NR_sched_yield:
         kal_thread_yield();
         return 0;
+    case __NR_sched_setaffinity:
+        return (long)sys_sched_setaffinity((pid_t)a0, (size_t)a1, (const unsigned long *)a2);
+    case __NR_sched_getaffinity:
+        return (long)sys_sched_getaffinity((pid_t)a0, (size_t)a1, (unsigned long *)a2);
     case __NR_kill:
         return (long)sys_kill((pid_t)a0, (int)a1);
     case __NR_rt_sigaction:
