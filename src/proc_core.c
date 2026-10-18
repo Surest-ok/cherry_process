@@ -63,6 +63,8 @@ int cherry_process_init(void)
     sema_init(&init_p->wait_sem, 0);
     vma_init(init_p);
     proc_signal_init(init_p);
+    extern void proc_ipc_init(void);
+    proc_ipc_init();
     kthread_set_data(init_p);
 
     /* Open default stdio for init process */
@@ -354,7 +356,7 @@ pid_t proc_waitpid(pid_t pid, int *status, int options)
             }
 
             if (target->task) {
-                kfree(target->task);
+                /* Handled by kthread lifecycle, do not kfree prematurely */
                 target->task = NULL;
             }
 

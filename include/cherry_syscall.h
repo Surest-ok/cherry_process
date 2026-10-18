@@ -68,6 +68,12 @@ extern "C" {
 #define __NR_geteuid            175
 #define __NR_getgid             176
 #define __NR_getegid            177
+#define __NR_mq_open            180
+#define __NR_mq_unlink          181
+#define __NR_mq_timedsend       182
+#define __NR_mq_timedreceive    183
+#define __NR_mq_notify          184
+#define __NR_mq_getsetattr      185
 #define __NR_socket             198
 #define __NR_socketpair         199
 #define __NR_bind               200

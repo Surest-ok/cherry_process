@@ -1,3 +1,4 @@
+#include "cherry_ipc.h"
 /*
  * CherrySyscall - System Call Dispatcher & Implementations
  *
@@ -965,6 +966,16 @@ static long cherry_syscall_internal(long nr, long a0, long a1, long a2, long a3,
         return -ENOSYS;
     case __NR_shutdown:
         return (long)sys_shutdown((int)a0, (int)a1);
+    case __NR_mq_open:
+        return (long)sys_mq_open((const char *)a0, (int)a1, (mode_t)a2, (const struct mq_attr *)a3);
+    case __NR_mq_unlink:
+        return (long)sys_mq_unlink((const char *)a0);
+    case __NR_mq_timedsend:
+        return (long)sys_mq_timedsend((mqd_t)a0, (const char *)a1, (size_t)a2, (unsigned int)a3, (const struct timespec *)a4);
+    case __NR_mq_timedreceive:
+        return (long)sys_mq_timedreceive((mqd_t)a0, (char *)a1, (size_t)a2, (unsigned int *)a3, (const struct timespec *)a4);
+    case __NR_mq_getsetattr:
+        return (long)sys_mq_getattr((mqd_t)a0, (struct mq_attr *)a1);
     default:
         return -ENOSYS;
     }
