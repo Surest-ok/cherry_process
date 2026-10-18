@@ -26,6 +26,7 @@ sources = [
     'src/proc_pipe.c',
     'src/proc_syscall.c',
     'src/proc_ipc.c',
+    'src/proc_env.c',
     'src/busybox_core.c',
     'src/busybox_applets.c',
     'src/busybox_sh.c',

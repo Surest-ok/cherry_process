@@ -10,6 +10,7 @@
 #include "cherry_syscall.h"
 #include "cherry_kal.h"
 #include "cherry_printk.h"
+#include "cherry_env.h"
 #include <string.h>
 
 extern int snprintf(char *str, size_t size, const char *format, ...);
@@ -427,8 +428,10 @@ uintptr_t proc_elf_setup_stack(uintptr_t stack_top, int argc, char **argv, char 
         NULL
     };
     char **effective_envp = envp;
+    char **built_envp = NULL;
     if (!effective_envp || !effective_envp[0]) {
-        effective_envp = (char **)s_default_envp;
+        built_envp = proc_env_build_envp();
+        effective_envp = built_envp ? built_envp : (char **)s_default_envp;
     }
 
     int envc = 0;
@@ -441,6 +444,10 @@ uintptr_t proc_elf_setup_stack(uintptr_t stack_top, int argc, char **argv, char 
         sp -= len;
         memcpy((void *)sp, effective_envp[i], len);
         envp_ptrs[i] = sp;
+    }
+
+    if (built_envp) {
+        proc_env_free_envp(built_envp);
     }
 
     /* 4. Push string data for argv onto stack */

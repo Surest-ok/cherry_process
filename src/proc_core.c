@@ -65,6 +65,8 @@ int cherry_process_init(void)
     proc_signal_init(init_p);
     extern void proc_ipc_init(void);
     proc_ipc_init();
+    extern void proc_env_init(void);
+    proc_env_init();
     kthread_set_data(init_p);
 
     /* Open default stdio for init process */

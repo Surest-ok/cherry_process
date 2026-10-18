@@ -586,14 +586,17 @@ int cherry_process_run_tests(void)
         }
     }
 
+    extern bool proc_ipc_run_tests(void);
     bool pass_ipc = proc_ipc_run_tests();
+    extern bool proc_env_run_tests(void);
+    bool pass_env = proc_env_run_tests();
 
     bool all_pass = pass_spawn && pass_wait && pass_fd && pass_pipe &&
-                    pass_ipc &&
+                    pass_ipc && pass_env &&
                     pass_syscall && pass_uaccess && pass_vma && pass_signal &&
                     pass_applets && pass_sh && pass_smp_ps && pass_elf;
 
-    pr_info("cherry_process: [process-verify] spawn=%s wait=%s fd=%s pipe=%s syscall=%s uaccess=%s vma=%s sig=%s ipc=%s applets=%s sh=%s smp_ps=%s elf_glibc=%s nopie=%s dyn=%s all=%s\n",
+    pr_info("cherry_process: [process-verify] spawn=%s wait=%s fd=%s pipe=%s syscall=%s uaccess=%s vma=%s sig=%s ipc=%s env=%s applets=%s sh=%s smp_ps=%s elf_glibc=%s nopie=%s dyn=%s all=%s\n",
             pass_spawn ? "pass" : "fail",
             pass_wait ? "pass" : "fail",
             pass_fd ? "pass" : "fail",
@@ -603,6 +606,7 @@ int cherry_process_run_tests(void)
             pass_vma ? "pass" : "fail",
             pass_signal ? "pass" : "fail",
             pass_ipc ? "pass" : "fail",
+            pass_env ? "pass" : "fail",
             pass_applets ? "pass" : "fail",
             pass_sh ? "pass" : "fail",
             pass_smp_ps ? "pass" : "fail",
